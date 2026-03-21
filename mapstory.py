@@ -339,5 +339,113 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         parser.error("Unknown command")
 
 
+def interactive():
+    print("=== MapStory 交互模式 ===")
+    db = input(f"数据库文件名（默认: {DEFAULT_DB}）：").strip() or DEFAULT_DB
+    store = EventStore(Path(db))
+    while True:
+        print("\n请选择操作: [add] 新增 | [list] 查看 | [update] 更新 | [search] 检索 | [exit] 退出")
+        cmd = input("操作: ").strip().lower()
+        if cmd in ("exit", "quit", "q"):
+            print("再见！")
+            break
+        elif cmd == "add":
+            print("请输入各字段（可回车跳过可选项）:")
+            event = input("事件描述（必填）: ").strip()
+            if not event:
+                print("事件描述不能为空！")
+                continue
+            time_iso = input("时间（如-221或-221-06-01，可空）: ").strip() or None
+            time_note = input("时间备注（如秦王政二十六年，可空）: ").strip() or None
+            lat = input("纬度lat（可空）: ").strip()
+            lat = float(lat) if lat else None
+            lon = input("经度lon（可空）: ").strip()
+            lon = float(lon) if lon else None
+            location_note = input("地点备注（可空）: ").strip() or None
+            persons = input("人物（逗号/分号分隔，可空）: ").strip() or None
+            priority = input("优先级 [fact/doubt/fanon/abridged_fact]（可空）: ").strip() or None
+            remark = input("备注（可空）: ").strip() or None
+            eid = store.add_event(
+                time_iso=time_iso,
+                time_note=time_note,
+                lat=lat,
+                lon=lon,
+                location_note=location_note,
+                persons=persons,
+                event=event,
+                priority=priority,
+                remark=remark,
+            )
+            print(f"已添加事件 #{eid}")
+        elif cmd == "list":
+            limit = input("显示多少条（默认20）: ").strip()
+            limit = int(limit) if limit else 20
+            rows = store.list_events(limit=limit)
+            _print_rows(rows)
+        elif cmd == "update":
+            try:
+                eid = int(input("要更新的事件ID: ").strip())
+            except Exception:
+                print("ID 必须为数字！")
+                continue
+            print("留空则不修改该字段。")
+            fields = {}
+            for k, prompt in [
+                ("event", "新事件描述"),
+                ("time_iso", "新时间"),
+                ("time_note", "新时间备注"),
+                ("lat", "新纬度lat"),
+                ("lon", "新经度lon"),
+                ("location_note", "新地点备注"),
+                ("persons", "新人物"),
+                ("priority", "新优先级"),
+                ("remark", "新备注")]:
+                v = input(f"{prompt}: ").strip()
+                if v:
+                    if k in ("lat", "lon"):
+                        try:
+                            v = float(v)
+                        except Exception:
+                            print(f"{prompt} 需为数字，已跳过")
+                            continue
+                    fields[k] = v
+            n = store.update_event(eid, **fields)
+            print(f"已更新 {n} 条记录")
+        elif cmd == "search":
+            print("可输入过滤条件，留空则忽略。")
+            start_year = input("起始年份: ").strip()
+            end_year = input("结束年份: ").strip()
+            lat_range = input("纬度范围（如30,40）: ").strip()
+            lon_range = input("经度范围（如100,120）: ").strip()
+            person = input("人物包含: ").strip() or None
+            event_contains = input("事件包含: ").strip() or None
+            location_contains = input("地点包含: ").strip() or None
+            kwargs = {}
+            if start_year: kwargs["start_year"] = int(start_year)
+            if end_year: kwargs["end_year"] = int(end_year)
+            if lat_range:
+                try:
+                    lat1, lat2 = map(float, lat_range.split(","))
+                    kwargs["lat_range"] = (lat1, lat2)
+                except Exception:
+                    print("纬度范围格式错误，已忽略")
+            if lon_range:
+                try:
+                    lon1, lon2 = map(float, lon_range.split(","))
+                    kwargs["lon_range"] = (lon1, lon2)
+                except Exception:
+                    print("经度范围格式错误，已忽略")
+            if person: kwargs["person_contains"] = person
+            if event_contains: kwargs["event_contains"] = event_contains
+            if location_contains: kwargs["location_contains"] = location_contains
+            rows = store.search_events(**kwargs)
+            _print_rows(rows)
+        else:
+            print("未知操作，请重试。")
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) == 1:
+        interactive()
+    else:
+        main()
