@@ -388,6 +388,21 @@ def interactive():
             except Exception:
                 print("ID 必须为数字！")
                 continue
+            # 显示现有条目
+            row = None
+            try:
+                row = store.conn.execute(
+                    "SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark FROM events WHERE id = ?",
+                    (eid,)
+                ).fetchone()
+            except Exception:
+                pass
+            if not row:
+                print(f"未找到ID为 {eid} 的事件。")
+                continue
+            print("现有条目：")
+            for k in ["id", "time_iso", "time_note", "lat", "lon", "location_note", "persons", "event", "priority", "remark"]:
+                print(f"  {k}: {row[k]}")
             print("留空则不修改该字段。")
             fields = {}
             for k, prompt in [
