@@ -4,10 +4,12 @@ MapStory core functionality: CLI for storing, updating, and querying events.
 """
 import argparse
 import datetime as _dt
+import logging
+import numbers
 import re
 import sqlite3
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 
 DEFAULT_DB = "mapstory.db"
@@ -20,6 +22,15 @@ PRIORITY_CHOICES = {
     "abridged_fact": "史实（删减）",
 }
 
+PRIORITY_LABELS = set(PRIORITY_CHOICES.values())
+
+
+logger = logging.getLogger(__name__)
+
+
+class InputValidationError(ValueError):
+    """Raised when user input fails data model validation."""
+
 
 def _utc_now_iso() -> str:
     return _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -29,6 +40,95 @@ def _parse_year(value: Optional[str]) -> Optional[int]:
     """Extract a leading signed year if present; otherwise return None."""
     if not value:
         return None
+
+
+def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _parse_time_components(value: Optional[str]) -> Tuple[Optional[int], Optional[int], Optional[int], int]:
+    """
+    Parse supported time formats and return (year, month, day, sort_bucket).
+    sort_bucket: 0=precise(day), 1=fuzzy(year/month or year), 2=conflict(unparseable), 3=empty
+    """
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None, None, None, 3
+
+    match = re.fullmatch(r"([+-]?\d{1,6})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", normalized)
+    if not match:
+        return _parse_year(normalized), None, None, 2
+
+    year = int(match.group(1))
+    month_raw = match.group(2)
+    day_raw = match.group(3)
+
+    if month_raw is None:
+        return year, None, None, 1
+
+    month = int(month_raw)
+    if month < 1 or month > 12:
+        return year, None, None, 2
+
+    if day_raw is None:
+        return year, month, None, 1
+
+    day = int(day_raw)
+    if day < 1 or day > 31:
+        return year, month, None, 2
+    return year, month, day, 0
+
+
+def _validate_priority(priority: Optional[str]) -> Optional[str]:
+    if priority is None:
+        return None
+    raw = _normalize_optional_text(priority)
+    if raw is None:
+        return None
+    if raw in PRIORITY_CHOICES:
+        return PRIORITY_CHOICES[raw]
+    if raw in PRIORITY_LABELS:
+        return raw
+    raise InputValidationError(
+        "priority 必须为 fact/doubt/fanon/abridged_fact 或对应中文标签"
+    )
+
+
+def _validate_event_text(event: Optional[str]) -> str:
+    value = _normalize_optional_text(event)
+    if value is None:
+        raise InputValidationError("event 不能为空")
+    return value
+
+
+def _validate_coordinates(lat: Optional[float], lon: Optional[float]) -> None:
+    if lat is not None and (lat < -90 or lat > 90):
+        raise InputValidationError("lat 超出范围，必须在 -90 到 90 之间")
+    if lon is not None and (lon < -180 or lon > 180):
+        raise InputValidationError("lon 超出范围，必须在 -180 到 180 之间")
+
+
+def _normalize_numeric_range(
+    values: Optional[Sequence[float]],
+    *,
+    label: str,
+    min_value: float,
+    max_value: float,
+) -> Optional[Tuple[float, float]]:
+    if not values:
+        return None
+    if len(values) != 2:
+        raise InputValidationError(f"{label} 需要两个值")
+    start = float(values[0])
+    end = float(values[1])
+    if start > end:
+        start, end = end, start
+    if start < min_value or end > max_value:
+        raise InputValidationError(f"{label} 超出范围，允许区间为 {min_value} 到 {max_value}")
+    return (start, end)
     match = re.match(r"^\s*([+-]?\d{1,6})", value)
     if not match:
         return None
@@ -74,6 +174,9 @@ class EventStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 time_iso TEXT,
                 time_year INTEGER,
+                time_month INTEGER,
+                time_day INTEGER,
+                time_sort_bucket INTEGER NOT NULL DEFAULT 3,
                 time_note TEXT,
                 lat REAL,
                 lon REAL,
@@ -87,9 +190,34 @@ class EventStore:
             )
             """
         )
+        existing_cols = {
+            row[1] for row in cur.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "time_month" not in existing_cols:
+            cur.execute("ALTER TABLE events ADD COLUMN time_month INTEGER")
+        if "time_day" not in existing_cols:
+            cur.execute("ALTER TABLE events ADD COLUMN time_day INTEGER")
+        if "time_sort_bucket" not in existing_cols:
+            cur.execute("ALTER TABLE events ADD COLUMN time_sort_bucket INTEGER NOT NULL DEFAULT 3")
+
         cur.execute("CREATE INDEX IF NOT EXISTS idx_events_time_year ON events(time_year)")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_time_sort ON events(time_sort_bucket, time_year, time_month, time_day)"
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_events_persons ON events(persons)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_events_location ON events(lat, lon)")
+        # Backfill derived time-ordering fields for existing rows.
+        rows = cur.execute("SELECT id, time_iso FROM events").fetchall()
+        for row in rows:
+            time_year, time_month, time_day, time_sort_bucket = _parse_time_components(row["time_iso"])
+            cur.execute(
+                """
+                UPDATE events
+                SET time_year = ?, time_month = ?, time_day = ?, time_sort_bucket = ?
+                WHERE id = ?
+                """,
+                (time_year, time_month, time_day, time_sort_bucket, row["id"]),
+            )
         self.conn.commit()
 
     def add_event(
@@ -105,31 +233,45 @@ class EventStore:
         priority: Optional[str],
         remark: Optional[str],
     ) -> int:
+        event_value = _validate_event_text(event)
+        _validate_coordinates(lat, lon)
+
         now = _utc_now_iso()
-        time_year = _parse_year(time_iso)
+        time_iso_norm = _normalize_optional_text(time_iso)
+        time_year, time_month, time_day, time_sort_bucket = _parse_time_components(time_iso_norm)
         persons_norm = _normalize_persons(persons)
-        priority_value = PRIORITY_CHOICES.get(priority, priority) if priority else None
+        priority_value = _validate_priority(priority)
+        time_note_norm = _normalize_optional_text(time_note)
+        location_note_norm = _normalize_optional_text(location_note)
+        remark_norm = _normalize_optional_text(remark)
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO events (time_iso, time_year, time_note, lat, lon, location_note, persons, event, priority, remark, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                time_iso,
-                time_year,
-                time_note,
-                lat,
-                lon,
-                location_note,
-                persons_norm,
-                event,
-                priority_value,
-                remark,
-                now,
-                now,
-            ),
-        )
+        try:
+            cur.execute(
+                """
+                INSERT INTO events (time_iso, time_year, time_month, time_day, time_sort_bucket, time_note, lat, lon, location_note, persons, event, priority, remark, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    time_iso_norm,
+                    time_year,
+                    time_month,
+                    time_day,
+                    time_sort_bucket,
+                    time_note_norm,
+                    lat,
+                    lon,
+                    location_note_norm,
+                    persons_norm,
+                    event_value,
+                    priority_value,
+                    remark_norm,
+                    now,
+                    now,
+                ),
+            )
+        except sqlite3.Error as exc:
+            logger.exception("Failed to insert event")
+            raise RuntimeError(f"数据库写入失败: {exc}") from exc
         self.conn.commit()
         return cur.lastrowid
 
@@ -137,16 +279,33 @@ class EventStore:
         if not fields:
             return 0
         payload = {}
+        lat_value = fields.get("lat")
+        lon_value = fields.get("lon")
+        if lat_value is not None or lon_value is not None:
+            _validate_coordinates(
+                float(lat_value) if isinstance(lat_value, numbers.Real) else None,
+                float(lon_value) if isinstance(lon_value, numbers.Real) else None,
+            )
+
         for key, value in fields.items():
             if value is None:
                 continue
             if key == "persons":
                 payload[key] = _normalize_persons(value)  # type: ignore[assignment]
             elif key == "time_iso":
-                payload[key] = value
-                payload["time_year"] = _parse_year(value)
+                normalized = _normalize_optional_text(str(value))
+                time_year, time_month, time_day, time_sort_bucket = _parse_time_components(normalized)
+                payload[key] = normalized
+                payload["time_year"] = time_year
+                payload["time_month"] = time_month
+                payload["time_day"] = time_day
+                payload["time_sort_bucket"] = time_sort_bucket
             elif key == "priority":
-                payload[key] = PRIORITY_CHOICES.get(str(value), value)
+                payload[key] = _validate_priority(str(value))
+            elif key == "event":
+                payload[key] = _validate_event_text(str(value))
+            elif key in ("time_note", "location_note", "remark"):
+                payload[key] = _normalize_optional_text(str(value))
             else:
                 payload[key] = value
         if not payload:
@@ -155,21 +314,31 @@ class EventStore:
         assignments = ", ".join(f"{k} = ?" for k in payload.keys())
         params = list(payload.values()) + [event_id]
         cur = self.conn.cursor()
-        cur.execute(f"UPDATE events SET {assignments} WHERE id = ?", params)
+        try:
+            cur.execute(f"UPDATE events SET {assignments} WHERE id = ?", params)
+        except sqlite3.Error as exc:
+            logger.exception("Failed to update event #%s", event_id)
+            raise RuntimeError(f"数据库更新失败: {exc}") from exc
         self.conn.commit()
         return cur.rowcount
 
     def list_events(self, limit: int = 20) -> List[sqlite3.Row]:
+        if limit <= 0:
+            raise InputValidationError("limit 必须为正整数")
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark
-            FROM events
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        try:
+            cur.execute(
+                """
+                SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark
+                FROM events
+                ORDER BY time_sort_bucket, time_year, COALESCE(time_month, 0), COALESCE(time_day, 0), id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        except sqlite3.Error as exc:
+            logger.exception("Failed to list events")
+            raise RuntimeError(f"数据库查询失败: {exc}") from exc
         return cur.fetchall()
 
     def search_events(
@@ -191,12 +360,14 @@ class EventStore:
         if end_year is not None:
             conditions.append("time_year <= ?")
             params.append(end_year)
-        if lat_range:
+        lat_range_norm = _normalize_numeric_range(lat_range, label="lat_range", min_value=-90, max_value=90)
+        if lat_range_norm:
             conditions.append("lat BETWEEN ? AND ?")
-            params.extend(lat_range)
-        if lon_range:
+            params.extend(lat_range_norm)
+        lon_range_norm = _normalize_numeric_range(lon_range, label="lon_range", min_value=-180, max_value=180)
+        if lon_range_norm:
             conditions.append("lon BETWEEN ? AND ?")
-            params.extend(lon_range)
+            params.extend(lon_range_norm)
         if person_contains:
             conditions.append("persons LIKE ?")
             params.append(f"%{person_contains}%")
@@ -208,15 +379,19 @@ class EventStore:
             params.append(f"%{location_contains}%")
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
         cur = self.conn.cursor()
-        cur.execute(
-            f"""
-            SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark
-            FROM events
-            {where_clause}
-            ORDER BY (time_year IS NULL), time_year, time_iso, id DESC
-            """,
-            params,
-        )
+        try:
+            cur.execute(
+                f"""
+                SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark
+                FROM events
+                {where_clause}
+                ORDER BY time_sort_bucket, time_year, COALESCE(time_month, 0), COALESCE(time_day, 0), id DESC
+                """,
+                params,
+            )
+        except sqlite3.Error as exc:
+            logger.exception("Failed to search events")
+            raise RuntimeError(f"数据库检索失败: {exc}") from exc
         return cur.fetchall()
 
 
@@ -327,16 +502,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     store = EventStore(Path(args.db))
-    if args.command == "add":
-        handle_add(store, args)
-    elif args.command == "update":
-        handle_update(store, args)
-    elif args.command == "list":
-        handle_list(store, args)
-    elif args.command == "search":
-        handle_search(store, args)
-    else:
-        parser.error("Unknown command")
+    try:
+        if args.command == "add":
+            handle_add(store, args)
+        elif args.command == "update":
+            handle_update(store, args)
+        elif args.command == "list":
+            handle_list(store, args)
+        elif args.command == "search":
+            handle_search(store, args)
+        else:
+            parser.error("Unknown command")
+    except InputValidationError as exc:
+        parser.error(f"输入错误: {exc}")
+    except RuntimeError as exc:
+        parser.error(str(exc))
 
 
 def interactive():
@@ -365,23 +545,29 @@ def interactive():
             persons = input("人物（逗号/分号分隔，可空）: ").strip() or None
             priority = input("优先级 [fact/doubt/fanon/abridged_fact]（可空）: ").strip() or None
             remark = input("备注（可空）: ").strip() or None
-            eid = store.add_event(
-                time_iso=time_iso,
-                time_note=time_note,
-                lat=lat,
-                lon=lon,
-                location_note=location_note,
-                persons=persons,
-                event=event,
-                priority=priority,
-                remark=remark,
-            )
-            print(f"已添加事件 #{eid}")
+            try:
+                eid = store.add_event(
+                    time_iso=time_iso,
+                    time_note=time_note,
+                    lat=lat,
+                    lon=lon,
+                    location_note=location_note,
+                    persons=persons,
+                    event=event,
+                    priority=priority,
+                    remark=remark,
+                )
+                print(f"已添加事件 #{eid}")
+            except (InputValidationError, RuntimeError) as exc:
+                print(f"输入/存储失败：{exc}")
         elif cmd == "list":
             limit = input("显示多少条（默认20）: ").strip()
             limit = int(limit) if limit else 20
-            rows = store.list_events(limit=limit)
-            _print_rows(rows)
+            try:
+                rows = store.list_events(limit=limit)
+                _print_rows(rows)
+            except (InputValidationError, RuntimeError) as exc:
+                print(f"查询失败：{exc}")
         elif cmd == "update":
             try:
                 eid = int(input("要更新的事件ID: ").strip())
@@ -424,8 +610,11 @@ def interactive():
                             print(f"{prompt} 需为数字，已跳过")
                             continue
                     fields[k] = v
-            n = store.update_event(eid, **fields)
-            print(f"已更新 {n} 条记录")
+            try:
+                n = store.update_event(eid, **fields)
+                print(f"已更新 {n} 条记录")
+            except (InputValidationError, RuntimeError) as exc:
+                print(f"更新失败：{exc}")
         elif cmd == "search":
             print("可输入过滤条件，留空则忽略。")
             start_year = input("起始年份: ").strip()
@@ -453,8 +642,11 @@ def interactive():
             if person: kwargs["person_contains"] = person
             if event_contains: kwargs["event_contains"] = event_contains
             if location_contains: kwargs["location_contains"] = location_contains
-            rows = store.search_events(**kwargs)
-            _print_rows(rows)
+            try:
+                rows = store.search_events(**kwargs)
+                _print_rows(rows)
+            except (InputValidationError, RuntimeError) as exc:
+                print(f"检索失败：{exc}")
         else:
             print("未知操作，请重试。")
 
