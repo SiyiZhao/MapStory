@@ -3,5 +3,7 @@ name = "mapstory"
 version = "0.1.0"
 description = "Things happen in time and space. Map the stories to the timeline and the Earth."
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+	"flask>=2.2",
+]

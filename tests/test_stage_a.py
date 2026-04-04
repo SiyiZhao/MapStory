@@ -17,10 +17,10 @@ class StageATests(unittest.TestCase):
         self.store.conn.close()
         self._tmp.cleanup()
 
-    def test_add_event_validates_required_event(self) -> None:
+    def test_create_validates_required_event(self) -> None:
         """验证新增事件时 event 为空白字符串会触发 InputValidationError。"""
         with self.assertRaises(InputValidationError):
-            self.store.add_event(
+            self.store.create(
                 time_iso="2020-01-01",
                 time_note=None,
                 lat=None,
@@ -32,10 +32,10 @@ class StageATests(unittest.TestCase):
                 remark=None,
             )
 
-    def test_add_event_validates_coordinates(self) -> None:
+    def test_create_validates_coordinates(self) -> None:
         """验证纬度超出 [-90, 90] 范围时会被拒绝。"""
         with self.assertRaises(InputValidationError):
-            self.store.add_event(
+            self.store.create(
                 time_iso="2020-01-01",
                 time_note=None,
                 lat=91.0,
@@ -48,8 +48,8 @@ class StageATests(unittest.TestCase):
             )
 
     def test_time_sorting_handles_precise_fuzzy_conflict_empty(self) -> None:
-        """验证 list_events 按时间分桶排序：精确 > 模糊 > 冲突 > 空值。"""
-        self.store.add_event(
+        """验证 list_all 按时间分桶排序：年 > 冲突文本 > 精确日期 > 空值。"""
+        self.store.create(
             time_iso="2020-05-01",
             time_note=None,
             lat=None,
@@ -60,7 +60,7 @@ class StageATests(unittest.TestCase):
             priority="fact",
             remark=None,
         )
-        self.store.add_event(
+        self.store.create(
             time_iso="2020",
             time_note=None,
             lat=None,
@@ -71,7 +71,7 @@ class StageATests(unittest.TestCase):
             priority="fact",
             remark=None,
         )
-        self.store.add_event(
+        self.store.create(
             time_iso="二十六年",
             time_note=None,
             lat=None,
@@ -82,7 +82,7 @@ class StageATests(unittest.TestCase):
             priority="fact",
             remark=None,
         )
-        self.store.add_event(
+        self.store.create(
             time_iso=None,
             time_note=None,
             lat=None,
@@ -94,12 +94,12 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
 
-        rows = self.store.list_events(limit=10)
-        self.assertEqual([row["event"] for row in rows], ["precise", "fuzzy", "conflict", "empty"])
+        rows = self.store.list_all(sort_by="time", limit=10)
+        self.assertEqual([row["event"] for row in rows], ["fuzzy", "conflict", "precise", "empty"])
 
     def test_update_recomputes_time_sort_fields(self) -> None:
-        """验证 update_event 修改 time_iso 后会重算 time_year/month/day/sort_bucket。"""
-        event_id = self.store.add_event(
+        """验证 update 修改 time_iso 后会重算 time_year/month/day/sort_bucket。"""
+        event_id = self.store.create(
             time_iso=None,
             time_note=None,
             lat=None,
@@ -111,7 +111,7 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
 
-        self.store.update_event(event_id, time_iso="1999-12")
+        self.store.update(event_id, time_iso="1999-12")
         row = self.store.conn.execute(
             "SELECT time_year, time_month, time_day, time_sort_bucket FROM events WHERE id = ?",
             (event_id,),
@@ -122,9 +122,9 @@ class StageATests(unittest.TestCase):
         self.assertIsNone(row["time_day"])
         self.assertEqual(row["time_sort_bucket"], 1)
 
-    def test_search_supports_normalized_ranges(self) -> None:
+    def test_filter_supports_normalized_ranges(self) -> None:
         """验证检索时反向区间输入会自动归一化后正确命中事件。"""
-        self.store.add_event(
+        self.store.create(
             time_iso="1911-10-10",
             time_note=None,
             lat=30.6,
@@ -136,7 +136,12 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
 
-        rows = self.store.search_events(lat_range=(40.0, 20.0), lon_range=(120.0, 100.0))
+        rows = self.store.filter(
+            {
+                "lat_range": (40.0, 20.0),
+                "lon_range": (120.0, 100.0),
+            }
+        )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["event"], "起义")
 
