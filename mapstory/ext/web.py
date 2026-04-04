@@ -337,14 +337,14 @@ LIST_TEMPLATE = """
     <article class="event-card">
       <div class="meta">
         <span class="badge">#{{ event.id }}</span>
-        <span>{{ event.time_display or '未填写时间' }}</span>
+        <span>{{ event.time_display or '未填写时间' }}{% if event.time_note %} · {{ event.time_note }}{% endif %}</span>
         <span>{{ event.location_display or '未填写地点' }}</span>
         <span class="badge{% if event.priority and event.priority != '史实' %} warning{% endif %}">{{ event.priority or '未设置优先级' }}</span>
       </div>
       <h3><a href="{{ url_for('web.event_detail', event_id=event.id) }}">{{ event.event }}</a></h3>
       <p class="muted">{{ event.persons_display or '未填写人物' }}</p>
-      {% if event.time_note or event.location_note or event.remark %}
-      <p class="muted">{{ event.time_note or event.location_note or event.remark }}</p>
+      {% if event.remark %}
+      <p class="muted">{{ event.remark }}</p>
       {% endif %}
     </article>
     {% endfor %}
