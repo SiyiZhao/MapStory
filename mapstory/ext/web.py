@@ -187,6 +187,7 @@ BASE_TEMPLATE = """
     }
 
     textarea { min-height: 120px; resize: vertical; }
+    .textarea-remark { min-height: 120px; }
 
     .cards {
       display: grid;
@@ -376,10 +377,10 @@ FORM_TEMPLATE = """
 
 <section class="card">
   <form method="post">
-    <label>事件描述
-      <textarea name="event" required>{{ form.event or '' }}</textarea>
-    </label>
     <div class="detail-grid">
+      <label>事件描述
+        <input name="event" required value="{{ form.event or '' }}" placeholder="输入事件描述">
+      </label>
       <label>时间
         <input name="time_iso" value="{{ form.time_iso or '' }}" placeholder="2024-01-15">
       </label>
@@ -406,10 +407,10 @@ FORM_TEMPLATE = """
           {% endfor %}
         </select>
       </label>
-      <label>备注 / 来源
-        <input name="remark" value="{{ form.remark or '' }}" placeholder="出处、链接或补充说明">
-      </label>
     </div>
+    <label>备注 / 来源
+      <textarea class="textarea-remark" name="remark" placeholder="出处、链接或补充说明">{{ form.remark or '' }}</textarea>
+    </label>
     {% if error %}
     <p class="badge warning">{{ error }}</p>
     {% endif %}
