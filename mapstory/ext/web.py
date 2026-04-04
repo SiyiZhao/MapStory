@@ -296,7 +296,10 @@ LIST_TEMPLATE = """
 <section class="card toolbar">
   <form method="get">
     <label>关键词
-      <input name="q" value="{{ filters.q or '' }}" placeholder="事件、地点、人物">
+      <input name="q" value="{{ filters.q or '' }}" placeholder="事件">
+    </label>
+    <label>地点
+      <input name="location" value="{{ filters.location or '' }}" placeholder="武汉、武昌、长安">
     </label>
     <label>人物
       <input name="person" value="{{ filters.person or '' }}" placeholder="张三, 李四">

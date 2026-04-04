@@ -94,6 +94,33 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("页面新增", detail_response.get_data(as_text=True))
 
+    def test_list_page_location_filter(self) -> None:
+        """验证列表页支持按地点备注筛选。"""
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "武昌起义",
+                "time_iso": "1911-10-10",
+                "location_note": "武昌",
+                "priority": "fact",
+            },
+        )
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "上海开埠",
+                "time_iso": "1843-11-17",
+                "location_note": "上海",
+                "priority": "fact",
+            },
+        )
+
+        response = self.client.get("/events?location=武昌")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("武昌起义", body)
+        self.assertNotIn("上海开埠", body)
+
 
 if __name__ == "__main__":
     unittest.main()
