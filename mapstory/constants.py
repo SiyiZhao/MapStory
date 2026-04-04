@@ -1,6 +1,6 @@
 """项目常量定义。"""
 
-DEFAULT_DB = "mapstory.db"
+DEFAULT_DB = "data/mapstory.db"
 DEFAULT_DB_PATH = DEFAULT_DB
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_LOCATION_RADIUS = 100

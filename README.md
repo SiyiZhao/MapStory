@@ -55,7 +55,7 @@ MapStory 目前提供一个基于 Flask 的本地 Web 界面，支持：
 启动方式示例：
 
 ```bash
-uv run python -c "from mapstory.ext import create_app; app = create_app(); app.run(debug=True)"
+uv run python -c "from mapstory.ext import create_app; app = create_app('data/mystory.db'); app.run(debug=True)"
 ```
 
 默认监听 `127.0.0.1:5000`。如需局域网访问，可在启动时传入 `host='0.0.0.0'`。
