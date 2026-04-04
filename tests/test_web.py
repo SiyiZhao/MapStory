@@ -121,6 +121,27 @@ class WebUITests(unittest.TestCase):
         self.assertIn("武昌起义", body)
         self.assertNotIn("上海开埠", body)
 
+    def test_detail_page_uses_remark_source_section(self) -> None:
+        """验证详情页下方展示“备注 / 来源”而非“事件内容”。"""
+        create_response = self.client.post(
+            "/api/events",
+            json={
+                "event": "长平之战",
+                "time_iso": "-260",
+                "priority": "fact",
+                "remark": "《史记》卷七十三",
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        event_id = create_response.get_json()["data"]["id"]
+
+        response = self.client.get(f"/events/{event_id}")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("备注 / 来源", body)
+        self.assertIn("《史记》卷七十三", body)
+        self.assertNotIn("事件内容", body)
+
 
 if __name__ == "__main__":
     unittest.main()

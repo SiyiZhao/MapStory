@@ -228,6 +228,10 @@ BASE_TEMPLATE = """
       margin: 16px 0;
     }
 
+    .detail-grid.five-col {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
     .detail-item {
       padding: 14px 16px;
       border-radius: 14px;
@@ -255,6 +259,7 @@ BASE_TEMPLATE = """
       .hero { grid-template-columns: 1fr; }
       .shell { width: min(100vw - 20px, 1180px); padding-top: 16px; }
       .hero-card, .sidebar, .card, .toolbar { padding: 16px; }
+      .detail-grid.five-col { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
     }
   </style>
 </head>
@@ -438,17 +443,16 @@ DETAIL_TEMPLATE = """
 </section>
 
 <section class="card">
-  <div class="detail-grid">
+  <div class="detail-grid five-col">
     <div class="detail-item"><span>时间</span>{{ event.time_display or '未填写' }}</div>
     <div class="detail-item"><span>时间备注</span>{{ event.time_note or '未填写' }}</div>
     <div class="detail-item"><span>地点</span>{{ event.location_display or '未填写' }}</div>
     <div class="detail-item"><span>人物</span>{{ event.persons_display or '未填写' }}</div>
     <div class="detail-item"><span>优先级</span>{{ event.priority or '未设置' }}</div>
-    <div class="detail-item"><span>备注 / 来源</span>{{ event.remark or '未填写' }}</div>
   </div>
   <div class="event-card">
-    <h3>事件内容</h3>
-    <p>{{ event.event }}</p>
+    <h3>备注 / 来源</h3>
+    <p>{{ event.remark or '未填写' }}</p>
   </div>
   <div class="detail-actions">
     <form method="post" action="{{ url_for('web.delete_event', event_id=event.id) }}" onsubmit="return confirm('确定删除这条事件吗？');">
