@@ -220,6 +220,7 @@ BASE_TEMPLATE = """
       font-size: 13px;
     }
 
+    .badge.custom { background: rgba(38, 96, 198, 0.14); color: #1f4f9b; }
     .badge.warning { background: rgba(155, 61, 45, 0.12); color: var(--danger); }
 
     .detail-grid {
@@ -339,7 +340,7 @@ LIST_TEMPLATE = """
         <span class="badge">#{{ event.id }}</span>
         <span>{{ event.time_display or '未填写时间' }}{% if event.time_note %} · {{ event.time_note }}{% endif %}</span>
         <span>{{ event.location_display or '未填写地点' }}</span>
-        <span class="badge{% if event.priority and event.priority != '史实' %} warning{% endif %}">{{ event.priority or '未设置优先级' }}</span>
+        <span class="badge{% if event.priority == '自设' %} custom{% elif event.priority and event.priority != '史实' %} warning{% endif %}">{{ event.priority or '未设置优先级' }}</span>
       </div>
       <h3><a href="{{ url_for('web.event_detail', event_id=event.id) }}">{{ event.event }}</a></h3>
       <p class="muted">{{ event.persons_display or '未填写人物' }}</p>
