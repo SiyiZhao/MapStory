@@ -11,7 +11,7 @@ from jinja2 import DictLoader
 from ..constants import DEFAULT_DB_PATH, DEFAULT_TIMEZONE, PRIORITY_CHOICES, PRIORITY_LABELS
 from ..errors import InputValidationError, NotFoundError
 from ..store import EventStore
-from ..time_utils import format_date_for_display
+from ..time import format_structured_time, structured_time_from_parts
 from ..validators import normalize_optional_text, normalize_persons, validate_priority
 
 BASE_TEMPLATE = """
@@ -383,7 +383,7 @@ FORM_TEMPLATE = """
         <input name="event" required value="{{ form.event or '' }}" placeholder="输入事件描述">
       </label>
       <label>时间
-        <input name="time_iso" value="{{ form.time_iso or '' }}" placeholder="2024-01-15">
+        <input name="time" value="{{ form.time or '' }}" placeholder="2024-01-15 或 2024-01-15 08:30">
       </label>
       <label>时间备注
         <input name="time_note" value="{{ form.time_note or '' }}" placeholder="历史纪年、原始标记等">
@@ -746,8 +746,8 @@ def _event_payload_from_json(data, *, partial: bool = False):
 def _event_payload_from_mapping(mapping, *, partial: bool = False):
     """从通用映射构造数据库写入参数。"""
     payload = {}
-    if not partial or "time_iso" in mapping:
-        payload["time_iso"] = normalize_optional_text(mapping.get("time_iso"))
+    if not partial or "time" in mapping or "time_iso" in mapping:
+        payload["time"] = normalize_optional_text(mapping.get("time") if "time" in mapping else mapping.get("time_iso"))
     if not partial or "time_note" in mapping:
         payload["time_note"] = normalize_optional_text(mapping.get("time_note"))
     if not partial or "location_note" in mapping:
@@ -771,7 +771,7 @@ def _event_payload_from_mapping(mapping, *, partial: bool = False):
 def _decorate_row(row, timezone: str):
     """给数据库行补充展示字段。"""
     payload = _row_to_payload(row, timezone)
-    payload["time_display"] = format_date_for_display(payload["time_iso"], tz=timezone) if payload.get("time_iso") else ""
+    payload["time_display"] = _row_time_text(payload)
     if payload.get("lat") is not None and payload.get("lon") is not None:
         location_text = f"{payload['lat']:.4f}, {payload['lon']:.4f}"
         if payload.get("location_note"):
@@ -787,7 +787,7 @@ def _row_to_form(row):
     """将数据库行转成表单初始值。"""
     return {
         "event": row["event"],
-        "time_iso": row["time_iso"],
+        "time": _row_time_text(row),
         "time_note": row["time_note"],
         "lat": row["lat"],
         "lon": row["lon"],
@@ -802,8 +802,13 @@ def _row_to_payload(row, timezone: str):
     """将数据库行转成 JSON 负载。"""
     return {
         "id": row["id"],
-        "time_iso": row["time_iso"],
+        "time": _row_time_text(row),
         "time_note": row["time_note"],
+        "time_year": row["time_year"],
+        "time_month": row["time_month"],
+        "time_day": row["time_day"],
+        "time_hour": row["time_hour"],
+        "time_minute": row["time_minute"],
         "lat": row["lat"],
         "lon": row["lon"],
         "location_note": row["location_note"],
@@ -813,7 +818,19 @@ def _row_to_payload(row, timezone: str):
         "remark": row["remark"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
-        "time_display": format_date_for_display(row["time_iso"], tz=timezone) if row["time_iso"] else "",
+        "time_display": _row_time_text(row),
         "persons_display": row["persons"],
         "location_display": row["location_note"],
     }
+
+
+def _row_time_text(row) -> str:
+    """从记录或负载生成展示时间。"""
+    value = structured_time_from_parts(
+        year=row.get("time_year") if hasattr(row, "get") else row["time_year"],
+        month=row.get("time_month") if hasattr(row, "get") else row["time_month"],
+        day=row.get("time_day") if hasattr(row, "get") else row["time_day"],
+        hour=row.get("time_hour") if hasattr(row, "get") else row["time_hour"],
+        minute=row.get("time_minute") if hasattr(row, "get") else row["time_minute"],
+    )
+    return format_structured_time(value)

@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .errors import NotFoundError
-from .time_utils import parse_time_components, utc_now_iso
+from .time import (
+    StructuredTime,
+    build_sort_key,
+    format_structured_time,
+    parse_time,
+    structured_time_from_parts,
+    utc_now_iso,
+)
 from .validators import (
     normalize_numeric_range,
     normalize_optional_text,
@@ -19,6 +26,25 @@ from .validators import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SELECT_FIELDS = """
+    id,
+    time_year,
+    time_month,
+    time_day,
+    time_hour,
+    time_minute,
+    time_note,
+    lat,
+    lon,
+    location_note,
+    persons,
+    event,
+    priority,
+    remark,
+    created_at,
+    updated_at
+"""
 
 
 class EventStore:
@@ -42,7 +68,8 @@ class EventStore:
                 time_year INTEGER,
                 time_month INTEGER,
                 time_day INTEGER,
-                time_sort_bucket INTEGER NOT NULL DEFAULT 3,
+                time_hour INTEGER,
+                time_minute INTEGER,
                 time_note TEXT,
                 lat REAL,
                 lon REAL,
@@ -62,36 +89,55 @@ class EventStore:
             cur.execute("ALTER TABLE events ADD COLUMN time_month INTEGER")
         if "time_day" not in existing_cols:
             cur.execute("ALTER TABLE events ADD COLUMN time_day INTEGER")
-        if "time_sort_bucket" not in existing_cols:
-            cur.execute("ALTER TABLE events ADD COLUMN time_sort_bucket INTEGER NOT NULL DEFAULT 3")
+        if "time_hour" not in existing_cols:
+            cur.execute("ALTER TABLE events ADD COLUMN time_hour INTEGER")
+        if "time_minute" not in existing_cols:
+            cur.execute("ALTER TABLE events ADD COLUMN time_minute INTEGER")
+        if "time_note" not in existing_cols:
+            cur.execute("ALTER TABLE events ADD COLUMN time_note TEXT")
         if "deleted_at" not in existing_cols:
             cur.execute("ALTER TABLE events ADD COLUMN deleted_at TEXT")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_events_time_year ON events(time_year)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_events_time_iso ON events(time_iso)")
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_time_sort ON events(time_sort_bucket, time_year, time_month, time_day)"
+            """
+            CREATE INDEX IF NOT EXISTS idx_events_time_sort
+            ON events(time_year, time_month, time_day, time_hour, time_minute)
+            """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_events_persons ON events(persons)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_events_location ON events(lat, lon)")
 
-        rows = cur.execute("SELECT id, time_iso FROM events").fetchall()
+        rows = cur.execute(
+            """
+            SELECT id, time_iso, time_year, time_month, time_day, time_hour, time_minute, time_note
+            FROM events
+            """
+        ).fetchall()
         for row in rows:
-            year, month, day, bucket = parse_time_components(row["time_iso"])
+            structured = self._migrate_time_row(row)
             cur.execute(
                 """
                 UPDATE events
-                SET time_year = ?, time_month = ?, time_day = ?, time_sort_bucket = ?
+                SET time_year = ?, time_month = ?, time_day = ?, time_hour = ?, time_minute = ?, time_note = ?
                 WHERE id = ?
                 """,
-                (year, month, day, bucket, row["id"]),
+                (
+                    structured.year,
+                    structured.month,
+                    structured.day,
+                    structured.hour,
+                    structured.minute,
+                    structured.time_note,
+                    row["id"],
+                ),
             )
         self.conn.commit()
 
     def create_event(
         self,
         *,
-        time_iso: Optional[str],
+        time: Optional[str] = None,
         time_note: Optional[str],
         lat: Optional[float],
         lon: Optional[float],
@@ -100,33 +146,33 @@ class EventStore:
         event: str,
         priority: Optional[str],
         remark: Optional[str],
+        time_iso: Optional[str] = None,
     ) -> int:
         """创建事件并返回新 ID。"""
         event_value = validate_event_text(event)
         validate_coordinates(lat, lon)
+        structured = parse_time(normalize_optional_text(time if time is not None else time_iso), time_note=normalize_optional_text(time_note))
 
         now = utc_now_iso()
-        time_iso_norm = normalize_optional_text(time_iso)
-        year, month, day, bucket = parse_time_components(time_iso_norm)
-
         cur = self.conn.cursor()
         try:
             cur.execute(
                 """
                 INSERT INTO events (
-                    time_iso, time_year, time_month, time_day, time_sort_bucket,
+                    time_iso, time_year, time_month, time_day, time_hour, time_minute,
                     time_note, lat, lon, location_note, persons, event, priority, remark,
                     created_at, updated_at, deleted_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
-                    time_iso_norm,
-                    year,
-                    month,
-                    day,
-                    bucket,
-                    normalize_optional_text(time_note),
+                    format_structured_time(structured) or None,
+                    structured.year,
+                    structured.month,
+                    structured.day,
+                    structured.hour,
+                    structured.minute,
+                    structured.time_note,
                     lat,
                     lon,
                     normalize_optional_text(location_note),
@@ -144,40 +190,17 @@ class EventStore:
         self.conn.commit()
         return cur.lastrowid
 
-    def add_event(
-        self,
-        *,
-        time_iso: Optional[str],
-        time_note: Optional[str],
-        lat: Optional[float],
-        lon: Optional[float],
-        location_note: Optional[str],
-        persons: Optional[str],
-        event: str,
-        priority: Optional[str],
-        remark: Optional[str],
-    ) -> int:
+    def add_event(self, *args, **kwargs) -> int:
         """兼容旧接口，内部转调 create_event。"""
-        return self.create_event(
-            time_iso=time_iso,
-            time_note=time_note,
-            lat=lat,
-            lon=lon,
-            location_note=location_note,
-            persons=persons,
-            event=event,
-            priority=priority,
-            remark=remark,
-        )
+        return self.create_event(*args, **kwargs)
 
     def get_event(self, event_id: int) -> sqlite3.Row:
         """按 ID 获取单条事件。"""
         cur = self.conn.cursor()
         try:
             row = cur.execute(
-                """
-                SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark
-                      , created_at, updated_at
+                f"""
+                SELECT {_SELECT_FIELDS}
                 FROM events
                 WHERE id = ? AND deleted_at IS NULL
                 """,
@@ -204,24 +227,50 @@ class EventStore:
             )
 
         payload = {}
+        has_time_field = "time" in fields or "time_iso" in fields
+        has_note_field = "time_note" in fields
+        raw_time_value = fields.get("time")
+        legacy_time_value = fields.get("time_iso")
+        raw_note_value = fields.get("time_note")
+        if has_time_field or has_note_field:
+            current = self.get_event(event_id)
+            current_structured = structured_time_from_parts(
+                year=current["time_year"],
+                month=current["time_month"],
+                day=current["time_day"],
+                hour=current["time_hour"],
+                minute=current["time_minute"],
+                time_note=current["time_note"],
+            )
+            input_time = raw_time_value if raw_time_value is not None else legacy_time_value
+            structured = parse_time(
+                normalize_optional_text(input_time) if has_time_field else format_structured_time(current_structured) or None,
+                time_note=normalize_optional_text(str(raw_note_value))
+                if has_note_field and raw_note_value is not None
+                else (None if has_note_field else current["time_note"]),
+            )
+            payload.update(
+                {
+                    "time_iso": format_structured_time(structured) or None,
+                    "time_year": structured.year,
+                    "time_month": structured.month,
+                    "time_day": structured.day,
+                    "time_hour": structured.hour,
+                    "time_minute": structured.minute,
+                    "time_note": structured.time_note,
+                }
+            )
+
         for key, value in fields.items():
-            if value is None:
+            if key in {"time", "time_iso", "time_note"} or value is None:
                 continue
             if key == "persons":
                 payload[key] = normalize_persons(str(value))
-            elif key == "time_iso":
-                normalized = normalize_optional_text(str(value))
-                year, month, day, bucket = parse_time_components(normalized)
-                payload[key] = normalized
-                payload["time_year"] = year
-                payload["time_month"] = month
-                payload["time_day"] = day
-                payload["time_sort_bucket"] = bucket
             elif key == "priority":
                 payload[key] = validate_priority(str(value))
             elif key == "event":
                 payload[key] = validate_event_text(str(value))
-            elif key in ("time_note", "location_note", "remark"):
+            elif key in ("location_note", "remark"):
                 payload[key] = normalize_optional_text(str(value))
             else:
                 payload[key] = value
@@ -234,10 +283,7 @@ class EventStore:
         params = list(payload.values()) + [event_id]
         cur = self.conn.cursor()
         try:
-            cur.execute(
-                f"UPDATE events SET {assignments} WHERE id = ? AND deleted_at IS NULL",
-                params,
-            )
+            cur.execute(f"UPDATE events SET {assignments} WHERE id = ? AND deleted_at IS NULL", params)
         except sqlite3.Error as exc:
             logger.exception("Failed to update event #%s", event_id)
             raise RuntimeError(f"数据库更新失败: {exc}") from exc
@@ -251,9 +297,10 @@ class EventStore:
             if hard:
                 cur.execute("DELETE FROM events WHERE id = ?", (event_id,))
             else:
+                now = utc_now_iso()
                 cur.execute(
                     "UPDATE events SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
-                    (utc_now_iso(), utc_now_iso(), event_id),
+                    (now, now, event_id),
                 )
         except sqlite3.Error as exc:
             logger.exception("Failed to delete event #%s", event_id)
@@ -272,27 +319,36 @@ class EventStore:
         if order not in {"time", "created"}:
             raise ValueError("order 仅支持 time 或 created")
 
-        order_by = (
-            "time_sort_bucket, time_year, COALESCE(time_month, 0), COALESCE(time_day, 0), id DESC"
-            if order == "time"
-            else "created_at DESC, id DESC"
-        )
+        order_by = "created_at DESC, id DESC" if order == "created" else "id DESC"
         cur = self.conn.cursor()
         try:
-            cur.execute(
-                f"""
-                SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark, created_at, updated_at
-                FROM events
-                WHERE deleted_at IS NULL
-                ORDER BY {order_by}
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            )
+            if order == "created":
+                cur.execute(
+                    f"""
+                    SELECT {_SELECT_FIELDS}
+                    FROM events
+                    WHERE deleted_at IS NULL
+                    ORDER BY {order_by}
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT {_SELECT_FIELDS}
+                    FROM events
+                    WHERE deleted_at IS NULL
+                    ORDER BY {order_by}
+                    """,
+                )
         except sqlite3.Error as exc:
             logger.exception("Failed to list events")
             raise RuntimeError(f"数据库查询失败: {exc}") from exc
-        return cur.fetchall()
+        rows = cur.fetchall()
+        if order == "created":
+            return rows
+        return self._sort_rows_by_time(rows)[offset : offset + limit]
 
     def create(self, *args, **kwargs):
         """设计文档中的 create 接口别名。"""
@@ -334,8 +390,8 @@ class EventStore:
 
     def query_by_time_range(self, start: str, end: str):
         """按时间范围查询。"""
-        start_year = parse_time_components(start)[0]
-        end_year = parse_time_components(end)[0]
+        start_year = parse_time(start).year
+        end_year = parse_time(end).year
         return self.search_events(start_year=start_year, end_year=end_year)
 
     def query_by_location_coords(self, lat: float, lon: float, radius_km: float):
@@ -427,26 +483,85 @@ class EventStore:
             conditions.append("priority = ?")
             params.append(validate_priority(priority))
 
-        order_by = (
-            "time_sort_bucket, time_year, COALESCE(time_month, 0), COALESCE(time_day, 0), id DESC"
-            if order == "time"
-            else "created_at DESC, id DESC"
-        )
+        order_by = "created_at DESC, id DESC" if order == "created" else "id DESC"
         where_clause = " AND ".join(conditions)
 
         cur = self.conn.cursor()
         try:
-            cur.execute(
-                f"""
-                SELECT id, time_iso, time_note, lat, lon, location_note, persons, event, priority, remark, created_at, updated_at
-                FROM events
-                WHERE {where_clause}
-                ORDER BY {order_by}
-                LIMIT ? OFFSET ?
-                """,
-                [*params, limit, offset],
-            )
+            if order == "created":
+                cur.execute(
+                    f"""
+                    SELECT {_SELECT_FIELDS}
+                    FROM events
+                    WHERE {where_clause}
+                    ORDER BY {order_by}
+                    LIMIT ? OFFSET ?
+                    """,
+                    [*params, limit, offset],
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT {_SELECT_FIELDS}
+                    FROM events
+                    WHERE {where_clause}
+                    ORDER BY {order_by}
+                    """,
+                    params,
+                )
         except sqlite3.Error as exc:
             logger.exception("Failed to search events")
             raise RuntimeError(f"数据库检索失败: {exc}") from exc
-        return cur.fetchall()
+        rows = cur.fetchall()
+        if order == "created":
+            return rows
+        return self._sort_rows_by_time(rows)[offset : offset + limit]
+
+    def _migrate_time_row(self, row: sqlite3.Row) -> StructuredTime:
+        """把旧数据迁移到新时间结构。"""
+        year = row["time_year"]
+        month = row["time_month"]
+        day = row["time_day"]
+        hour = row["time_hour"] if "time_hour" in row.keys() else None
+        minute = row["time_minute"] if "time_minute" in row.keys() else None
+        note = normalize_optional_text(row["time_note"])
+
+        if any(part is not None for part in (year, month, day, hour, minute)):
+            return structured_time_from_parts(
+                year=year,
+                month=month,
+                day=day,
+                hour=hour,
+                minute=minute,
+                time_note=note,
+            )
+
+        legacy_time = normalize_optional_text(row["time_iso"]) if "time_iso" in row.keys() else None
+        if not legacy_time:
+            return StructuredTime(year=None, month=None, day=None, hour=None, minute=None, time_note=note)
+
+        try:
+            return parse_time(legacy_time, time_note=note)
+        except Exception:
+            # 旧数据中的非结构化时间转移到 time_note。
+            merged_note = legacy_time if note is None else f"{legacy_time}；{note}"
+            return StructuredTime(year=None, month=None, day=None, hour=None, minute=None, time_note=merged_note)
+
+    def _sort_rows_by_time(self, rows: Sequence[sqlite3.Row]) -> list[sqlite3.Row]:
+        """按统一 sort_key 对结果排序。"""
+        return sorted(
+            rows,
+            key=lambda row: (
+                build_sort_key(
+                    structured_time_from_parts(
+                        year=row["time_year"],
+                        month=row["time_month"],
+                        day=row["time_day"],
+                        hour=row["time_hour"],
+                        minute=row["time_minute"],
+                        time_note=row["time_note"],
+                    )
+                ),
+                -row["id"],
+            ),
+        )

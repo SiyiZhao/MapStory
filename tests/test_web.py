@@ -33,7 +33,7 @@ class WebUITests(unittest.TestCase):
             "/api/events",
             json={
                 "event": "秦始皇三十六年巡游",
-                "time_iso": "-221",
+                "time": "-221",
                 "priority": "fact",
             },
         )
@@ -51,7 +51,7 @@ class WebUITests(unittest.TestCase):
             "/api/events",
             json={
                 "event": "辛亥首义",
-                "time_iso": "1911-10-10",
+                "time": "1911-10-10",
                 "lat": 30.6,
                 "lon": 114.3,
                 "location_note": "武昌",
@@ -63,6 +63,7 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(create_response.status_code, 201)
         created = create_response.get_json()["data"]
         self.assertEqual(created["event"], "辛亥首义")
+        self.assertEqual(created["time"], "1911-10-10")
 
         list_response = self.client.get("/api/events")
         self.assertEqual(list_response.status_code, 200)
@@ -76,13 +77,42 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(delete_response.status_code, 200)
         self.assertTrue(delete_response.get_json()["data"]["deleted"])
 
+    def test_api_patch_can_clear_structured_time(self) -> None:
+        """验证 API PATCH 可显式清空结构化时间，同时保留时间备注。"""
+        create_response = self.client.post(
+            "/api/events",
+            json={
+                "event": "待清空时间",
+                "time": "1911-10-10 08",
+                "time_note": "宣统三年",
+                "priority": "fact",
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.get_json()["data"]
+
+        patch_response = self.client.patch(
+            f"/api/events/{created['id']}",
+            json={"time": "", "time_note": "仅保留备注"},
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        patched = patch_response.get_json()["data"]
+        self.assertEqual(patched["time"], "")
+        self.assertEqual(patched["time_note"], "仅保留备注")
+        self.assertEqual(patched["time_display"], "")
+        self.assertIsNone(patched["time_year"])
+        self.assertIsNone(patched["time_month"])
+        self.assertIsNone(patched["time_day"])
+        self.assertIsNone(patched["time_hour"])
+        self.assertIsNone(patched["time_minute"])
+
     def test_form_create_redirects_to_detail(self) -> None:
         """验证 HTML 表单可创建事件并跳转详情页。"""
         response = self.client.post(
             "/events/new",
             data={
                 "event": "页面新增",
-                "time_iso": "2024-01-15",
+                "time": "2024-01-15",
                 "persons": "张三, 李四",
                 "priority": "doubt",
             },
@@ -100,7 +130,7 @@ class WebUITests(unittest.TestCase):
             "/api/events",
             json={
                 "event": "武昌起义",
-                "time_iso": "1911-10-10",
+                "time": "1911-10-10",
                 "location_note": "武昌",
                 "priority": "fact",
             },
@@ -109,7 +139,7 @@ class WebUITests(unittest.TestCase):
             "/api/events",
             json={
                 "event": "上海开埠",
-                "time_iso": "1843-11-17",
+                "time": "1843-11-17",
                 "location_note": "上海",
                 "priority": "fact",
             },
@@ -127,7 +157,7 @@ class WebUITests(unittest.TestCase):
             "/api/events",
             json={
                 "event": "长平之战",
-                "time_iso": "-260",
+                "time": "-260",
                 "priority": "fact",
                 "remark": "《史记》卷七十三",
             },

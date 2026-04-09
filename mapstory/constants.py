@@ -20,14 +20,9 @@ PRIORITY_CHOICES = {
 
 PRIORITY_LABELS = set(PRIORITY_CHOICES.values())
 
-TIME_GRANULARITY_YEAR = 0
-TIME_GRANULARITY_MONTH = 1
-TIME_GRANULARITY_DAY = 2
-TIME_GRANULARITY_EMPTY = 3
-
 EVENT_COLUMNS = [
     "id",
-    "time_iso",
+    "time",
     "time_note",
     "lat",
     "lon",
@@ -37,4 +32,3 @@ EVENT_COLUMNS = [
     "priority",
     "remark",
 ]
-

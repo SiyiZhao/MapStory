@@ -8,7 +8,7 @@ from ..store import EventStore
 def create_event(store: EventStore, args: Namespace):
     """创建事件并返回创建后的记录。"""
     event_id = store.create_event(
-        time_iso=args.time_iso,
+        time=args.time,
         time_note=args.time_note,
         lat=args.lat,
         lon=args.lon,
@@ -23,18 +23,12 @@ def create_event(store: EventStore, args: Namespace):
 
 def update_event(store: EventStore, args: Namespace):
     """更新事件并返回更新后的记录。"""
-    updated = store.update_event(
-        args.id,
-        time_iso=args.time_iso,
-        time_note=args.time_note,
-        lat=args.lat,
-        lon=args.lon,
-        location_note=args.location_note,
-        persons=args.persons,
-        event=args.event,
-        priority=args.priority,
-        remark=args.remark,
-    )
+    payload = {}
+    for key in ("time", "time_note", "lat", "lon", "location_note", "persons", "event", "priority", "remark"):
+        value = getattr(args, key)
+        if value is not None:
+            payload[key] = value
+    updated = store.update_event(args.id, **payload)
     if updated == 0:
         return []
     return [store.get_event(args.id)]

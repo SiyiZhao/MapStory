@@ -21,7 +21,7 @@ class StageATests(unittest.TestCase):
         """验证新增事件时 event 为空白字符串会触发 InputValidationError。"""
         with self.assertRaises(InputValidationError):
             self.store.create(
-                time_iso="2020-01-01",
+                time="2020-01-01",
                 time_note=None,
                 lat=None,
                 lon=None,
@@ -36,7 +36,7 @@ class StageATests(unittest.TestCase):
         """验证纬度超出 [-90, 90] 范围时会被拒绝。"""
         with self.assertRaises(InputValidationError):
             self.store.create(
-                time_iso="2020-01-01",
+                time="2020-01-01",
                 time_note=None,
                 lat=91.0,
                 lon=0.0,
@@ -47,10 +47,10 @@ class StageATests(unittest.TestCase):
                 remark=None,
             )
 
-    def test_time_sorting_handles_precise_fuzzy_conflict_empty(self) -> None:
-        """验证 list_all 按时间分桶排序：年 > 冲突文本 > 精确日期 > 空值。"""
+    def test_time_sorting_handles_precision_and_empty(self) -> None:
+        """验证 list_all 按时间和精度排序：年 > 日 > 空值。"""
         self.store.create(
-            time_iso="2020-05-01",
+            time="2020-05-01",
             time_note=None,
             lat=None,
             lon=None,
@@ -61,7 +61,7 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
         self.store.create(
-            time_iso="2020",
+            time="2020",
             time_note=None,
             lat=None,
             lon=None,
@@ -72,8 +72,8 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
         self.store.create(
-            time_iso="二十六年",
-            time_note=None,
+            time=None,
+            time_note="二十六年",
             lat=None,
             lon=None,
             location_note=None,
@@ -83,7 +83,7 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
         self.store.create(
-            time_iso=None,
+            time=None,
             time_note=None,
             lat=None,
             lon=None,
@@ -95,12 +95,12 @@ class StageATests(unittest.TestCase):
         )
 
         rows = self.store.list_all(sort_by="time", limit=10)
-        self.assertEqual([row["event"] for row in rows], ["fuzzy", "conflict", "precise", "empty"])
+        self.assertEqual([row["event"] for row in rows], ["fuzzy", "precise", "empty", "conflict"])
 
-    def test_update_recomputes_time_sort_fields(self) -> None:
-        """验证 update 修改 time_iso 后会重算 time_year/month/day/sort_bucket。"""
+    def test_update_recomputes_time_fields(self) -> None:
+        """验证 update 修改 time 后会重算 time_year/month/day/hour/minute。"""
         event_id = self.store.create(
-            time_iso=None,
+            time=None,
             time_note=None,
             lat=None,
             lon=None,
@@ -111,21 +111,22 @@ class StageATests(unittest.TestCase):
             remark=None,
         )
 
-        self.store.update(event_id, time_iso="1999-12")
+        self.store.update(event_id, time="1999-12-31 08")
         row = self.store.conn.execute(
-            "SELECT time_year, time_month, time_day, time_sort_bucket FROM events WHERE id = ?",
+            "SELECT time_year, time_month, time_day, time_hour, time_minute FROM events WHERE id = ?",
             (event_id,),
         ).fetchone()
 
         self.assertEqual(row["time_year"], 1999)
         self.assertEqual(row["time_month"], 12)
-        self.assertIsNone(row["time_day"])
-        self.assertEqual(row["time_sort_bucket"], 1)
+        self.assertEqual(row["time_day"], 31)
+        self.assertEqual(row["time_hour"], 8)
+        self.assertIsNone(row["time_minute"])
 
     def test_filter_supports_normalized_ranges(self) -> None:
         """验证检索时反向区间输入会自动归一化后正确命中事件。"""
         self.store.create(
-            time_iso="1911-10-10",
+            time="1911-10-10",
             time_note=None,
             lat=30.6,
             lon=114.3,

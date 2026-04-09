@@ -47,7 +47,7 @@ def _do_create(store: EventStore) -> None:
     """读取输入并创建事件。"""
     event = input("事件描述（必填）: ").strip()
     event_id = store.create_event(
-        time_iso=input("时间（如-221或1949-10-01，可空）: ").strip() or None,
+        time=input("时间（如-221、1949-10、1949-10-01 08:30，可空）: ").strip() or None,
         time_note=input("时间备注（可空）: ").strip() or None,
         lat=_to_float(input("纬度lat（可空）: ").strip()),
         lon=_to_float(input("经度lon（可空）: ").strip()),
@@ -78,7 +78,7 @@ def _do_update(store: EventStore) -> None:
     event_id = int(input("要更新的事件ID: ").strip())
     fields = {
         "event": input("新事件描述（留空不改）: ").strip() or None,
-        "time_iso": input("新时间（留空不改）: ").strip() or None,
+        "time": input("新时间（留空不改）: ").strip() or None,
         "time_note": input("新时间备注（留空不改）: ").strip() or None,
         "lat": _to_float(input("新纬度lat（留空不改）: ").strip(), allow_none=True),
         "lon": _to_float(input("新经度lon（留空不改）: ").strip(), allow_none=True),
@@ -87,7 +87,7 @@ def _do_update(store: EventStore) -> None:
         "priority": input("新优先级（留空不改）: ").strip() or None,
         "remark": input("新备注（留空不改）: ").strip() or None,
     }
-    store.update_event(event_id, **fields)
+    store.update_event(event_id, **{key: value for key, value in fields.items() if value is not None})
     print_rows_table([store.get_event(event_id)])
 
 

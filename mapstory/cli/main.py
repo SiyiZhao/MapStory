@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_event_fields(parser: argparse.ArgumentParser, *, required_event: bool) -> None:
     """为 create/update 命令注入事件字段参数。"""
     parser.add_argument("--event", required=required_event, help="Event description")
-    parser.add_argument("--time", dest="time_iso")
+    parser.add_argument("--time")
     parser.add_argument("--time-note")
     parser.add_argument("--lat", type=float)
     parser.add_argument("--lon", type=float)
