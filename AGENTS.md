@@ -51,3 +51,9 @@ The central domain object is an event with structured time, optional historical 
 - The Flask app creates an `EventStore` per request and closes it in teardown.
 - The Web UI templates are currently embedded in `mapstory/ext/web.py` via `DictLoader`.
 - Tests are currently `unittest` based and create temporary SQLite databases.
+
+## Active Work Notes
+
+- Era conversion work is experimental and currently lives on branch `codex-era-conversion-experiment`.
+- Do not treat `data/era.db` as a stable tracked source artifact yet; it is generated/experimental and ignored.
+- `.github/copilot-instructions.md` is local-only and ignored.
