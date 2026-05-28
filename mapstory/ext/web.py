@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import math
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Blueprint, Flask, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
 
 from ..constants import DEFAULT_DB_PATH, DEFAULT_TIMEZONE, PRIORITY_CHOICES, PRIORITY_LABELS
@@ -13,6 +15,125 @@ from ..errors import InputValidationError, NotFoundError
 from ..store import EventStore
 from ..time import build_sort_key, format_structured_time, structured_time_from_parts
 from ..validators import normalize_optional_text, normalize_persons, validate_priority
+
+BASEMAP_LAYERS: dict[str, dict[str, Any]] = {
+    "modern": {
+        "title": "现代行政规划图",
+        "description": "优先使用自然资源部/天地图标准地图服务下载的中国地图；未放入本地图片时显示临时矢量参照。",
+        "source": "自然资源部/天地图标准地图服务系统",
+        "source_url": "https://bzdt.tianditu.gov.cn/",
+        "asset_hint": "data/basemaps/modern.jpg",
+        "asset_key": "modern",
+        "land": [
+            (40.7, 105.5),
+            (40.3, 108.0),
+            (39.7, 110.7),
+            (40.2, 113.8),
+            (38.9, 116.9),
+            (38.3, 121.4),
+            (35.7, 120.8),
+            (34.7, 121.6),
+            (32.8, 120.9),
+            (31.2, 119.5),
+            (30.5, 116.8),
+            (31.0, 113.4),
+            (31.9, 110.5),
+            (32.4, 107.2),
+            (34.1, 105.5),
+            (37.0, 105.0),
+        ],
+        "regions": [
+            {"label": "陕西", "points": [(32.7, 105.9), (34.2, 106.1), (36.2, 106.8), (38.2, 108.0), (39.5, 109.5), (38.6, 111.1), (36.2, 110.6), (34.3, 110.2), (33.2, 108.8)]},
+            {"label": "河南", "points": [(31.7, 111.0), (33.0, 110.8), (34.2, 111.4), (35.7, 112.2), (36.6, 114.0), (35.8, 116.3), (34.4, 116.8), (32.4, 115.5), (31.6, 113.5)]},
+            {"label": "山西", "points": [(34.7, 110.5), (36.1, 110.7), (38.4, 111.3), (40.4, 112.1), (40.0, 114.5), (37.9, 114.2), (35.5, 113.6), (34.8, 112.0)]},
+            {"label": "山东", "points": [(34.8, 115.6), (36.2, 116.1), (37.7, 117.0), (38.5, 119.2), (37.2, 121.0), (35.5, 119.7), (34.8, 118.1)]},
+            {"label": "苏皖", "points": [(30.8, 116.4), (32.7, 115.7), (34.5, 116.1), (35.0, 118.2), (34.3, 120.7), (32.0, 120.6), (30.8, 119.0)]},
+        ],
+        "lines": [
+            {
+                "label": "黄河",
+                "kind": "river",
+                "points": [(36.4, 106.6), (36.5, 109.2), (35.6, 111.4), (34.9, 113.6), (35.2, 116.0), (36.5, 118.7)],
+            },
+            {
+                "label": "淮河",
+                "kind": "river",
+                "points": [(32.6, 113.0), (32.9, 115.2), (32.7, 117.6), (33.0, 119.0)],
+            },
+            {
+                "label": "秦岭",
+                "kind": "ridge",
+                "points": [(33.7, 106.4), (34.0, 108.5), (33.9, 110.5), (33.8, 112.1)],
+            },
+        ],
+        "labels": [
+            {"text": "关中平原", "lat": 34.5, "lon": 108.8, "major": True},
+            {"text": "中原", "lat": 34.7, "lon": 113.5, "major": True},
+            {"text": "淮泗", "lat": 33.4, "lon": 117.6, "major": False},
+            {"text": "汉中盆地", "lat": 33.1, "lon": 106.9, "major": False},
+        ],
+    },
+    "historical": {
+        "title": "当时地理图",
+        "description": "优先使用谭其骧主编《中国历史地图集》第二册秦汉相关图幅；未放入本地图片时显示临时矢量参照。",
+        "source": "谭其骧主编《中国历史地图集》第二册（秦·西汉·东汉时期）",
+        "source_url": "https://zh.wikipedia.org/wiki/%E4%B8%AD%E5%9B%BD%E5%8E%86%E5%8F%B2%E5%9C%B0%E5%9B%BE%E9%9B%86",
+        "asset_hint": "data/basemaps/qin-han-liuhou.jpg",
+        "asset_key": "qin-han-liuhou",
+        "land": [
+            (40.7, 105.5),
+            (40.0, 108.7),
+            (39.2, 111.6),
+            (39.7, 114.4),
+            (38.2, 117.4),
+            (38.0, 120.6),
+            (36.3, 121.5),
+            (34.5, 120.9),
+            (33.0, 119.9),
+            (31.2, 119.0),
+            (30.7, 116.4),
+            (31.5, 112.4),
+            (32.6, 108.2),
+            (34.0, 105.7),
+            (37.1, 105.2),
+        ],
+        "regions": [
+            {"label": "秦关中", "points": [(33.6, 106.2), (34.6, 106.4), (35.6, 107.4), (35.8, 109.2), (35.0, 110.6), (34.0, 110.2), (33.6, 108.3)]},
+            {"label": "韩故地", "points": [(33.4, 111.0), (34.1, 110.6), (35.0, 111.2), (35.8, 112.5), (35.4, 114.4), (34.2, 114.9), (33.4, 113.8)]},
+            {"label": "魏地", "points": [(34.1, 114.0), (35.0, 113.8), (36.1, 114.4), (36.5, 115.8), (35.9, 117.1), (34.5, 116.9), (33.9, 115.4)]},
+            {"label": "齐地", "points": [(35.3, 116.5), (36.7, 116.8), (38.2, 118.0), (38.4, 119.8), (37.0, 120.5), (35.7, 119.3)]},
+            {"label": "楚地", "points": [(31.2, 112.1), (32.2, 113.0), (33.5, 114.4), (34.5, 116.4), (34.0, 119.1), (32.5, 119.7), (31.3, 118.0)]},
+            {"label": "汉中", "points": [(32.5, 105.7), (33.2, 105.8), (34.0, 106.7), (33.6, 108.0), (32.7, 108.2), (32.3, 106.9)]},
+        ],
+        "lines": [
+            {
+                "label": "函谷-武关道",
+                "kind": "road",
+                "points": [(34.7, 110.9), (34.1, 110.2), (33.7, 109.1), (33.5, 110.8)],
+            },
+            {
+                "label": "鸿沟、荥阳前线",
+                "kind": "frontier",
+                "points": [(35.0, 113.0), (34.8, 114.1), (34.7, 115.2), (34.5, 116.1)],
+            },
+            {
+                "label": "黄河",
+                "kind": "river",
+                "points": [(36.4, 106.6), (36.5, 109.2), (35.6, 111.4), (34.9, 113.6), (35.2, 116.0), (36.5, 118.7)],
+            },
+        ],
+        "labels": [
+            {"text": "秦", "lat": 34.7, "lon": 108.7, "major": True},
+            {"text": "韩故地", "lat": 34.7, "lon": 113.2, "major": True},
+            {"text": "楚", "lat": 32.9, "lon": 117.4, "major": True},
+            {"text": "齐", "lat": 36.8, "lon": 118.4, "major": True},
+            {"text": "下邳", "lat": 34.3, "lon": 118.0, "major": False},
+            {"text": "留", "lat": 34.7, "lon": 116.9, "major": False},
+        ],
+    },
+}
+
+BASEMAP_OPTIONS = [(key, layer["title"]) for key, layer in BASEMAP_LAYERS.items()]
 
 BASE_TEMPLATE = """
 <!doctype html>
@@ -276,6 +397,88 @@ BASE_TEMPLATE = """
       background-size: 48px 48px;
     }
 
+    .interactive-map {
+      width: 100%;
+      min-height: 560px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      background: #eef3ed;
+    }
+
+    .map-notice {
+      padding: 18px;
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .map-stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .basemap-region {
+      fill: rgba(214, 196, 154, 0.28);
+      stroke: rgba(107, 93, 70, 0.34);
+      stroke-width: 1.4;
+    }
+
+    .basemap-land {
+      fill: rgba(246, 237, 216, 0.80);
+      stroke: rgba(95, 84, 66, 0.38);
+      stroke-width: 2.2;
+    }
+
+    .basemap-raster {
+      opacity: 0.72;
+    }
+
+    .basemap-historical .basemap-region {
+      fill: rgba(155, 61, 45, 0.13);
+      stroke: rgba(155, 61, 45, 0.30);
+    }
+
+    .basemap-historical .basemap-land {
+      fill: rgba(246, 232, 206, 0.82);
+      stroke: rgba(126, 84, 55, 0.42);
+    }
+
+    .basemap-line {
+      fill: none;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0.78;
+    }
+
+    .basemap-line.river { stroke: #547b99; }
+    .basemap-line.ridge { stroke: rgba(86, 94, 62, 0.58); stroke-dasharray: 7 6; }
+    .basemap-line.road { stroke: rgba(123, 77, 45, 0.62); stroke-dasharray: 6 5; }
+    .basemap-line.frontier { stroke: rgba(155, 61, 45, 0.52); stroke-dasharray: 4 5; }
+
+    .basemap-label {
+      fill: rgba(93, 80, 62, 0.78);
+      font-size: 15px;
+      font-weight: 700;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: rgba(253, 248, 239, 0.78);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+
+    .basemap-label.minor {
+      font-size: 12px;
+      font-weight: 600;
+      fill: rgba(93, 80, 62, 0.62);
+    }
+
+    .basemap-caption {
+      fill: rgba(108, 98, 87, 0.76);
+      font-size: 13px;
+    }
+
     .route-line {
       fill: none;
       stroke: var(--accent);
@@ -290,21 +493,30 @@ BASE_TEMPLATE = """
       stroke-width: 2.5;
     }
 
+    .route-marker {
+      cursor: pointer;
+      outline: none;
+    }
+
+    .route-marker:hover .route-point,
+    .route-marker:focus .route-point,
+    .route-marker.active .route-point {
+      fill: var(--accent-soft);
+      stroke-width: 4;
+    }
+
+    .route-offset-line {
+      stroke: rgba(155, 61, 45, 0.42);
+      stroke-width: 1.5;
+      stroke-dasharray: 3 3;
+    }
+
     .route-number {
       fill: var(--text);
       font-size: 12px;
       font-weight: 700;
       text-anchor: middle;
       dominant-baseline: middle;
-    }
-
-    .route-label {
-      fill: var(--text);
-      font-size: 13px;
-      paint-order: stroke;
-      stroke: rgba(255, 250, 242, 0.9);
-      stroke-width: 4px;
-      stroke-linejoin: round;
     }
 
     .route-list {
@@ -322,6 +534,14 @@ BASE_TEMPLATE = """
       border-radius: 14px;
       border: 1px solid var(--border);
       background: rgba(255, 255, 255, 0.78);
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+      cursor: pointer;
+    }
+
+    .route-item.active {
+      border-color: rgba(31, 95, 74, 0.56);
+      background: rgba(215, 239, 231, 0.54);
+      box-shadow: 0 0 0 3px rgba(31, 95, 74, 0.12);
     }
 
     .route-item header {
@@ -350,6 +570,7 @@ BASE_TEMPLATE = """
       .detail-grid.five-col { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .map-panel { grid-template-columns: 1fr; }
       .route-map { min-height: 380px; }
+      .interactive-map { min-height: 420px; }
     }
   </style>
 </head>
@@ -463,7 +684,15 @@ MAP_TEMPLATE = """
   </article>
   <aside class="hero-card sidebar">
     <div class="pill">轨迹点 {{ map_data.points|length }}</div>
+    <div class="pill">{{ map_data.basemap.title }}</div>
     <p><strong>{{ map_data.bounds_label }}</strong></p>
+    <p class="muted">{{ map_data.basemap.description }}</p>
+    <p class="muted">来源：<a href="{{ map_data.basemap.source_url }}" target="_blank" rel="noreferrer">{{ map_data.basemap.source }}</a></p>
+    {% if map_data.basemap.image_url %}
+    <p class="muted">当前使用本地权威图片底图。</p>
+    {% else %}
+    <p class="muted">尚未找到 {{ map_data.basemap.asset_hint }}，当前显示临时矢量参照。</p>
+    {% endif %}
     <p class="muted">同一地点的重复事件会按时间保留，方便观察停留与回返。</p>
   </aside>
 </section>
@@ -488,27 +717,73 @@ MAP_TEMPLATE = """
     <label>结果数
       <input name="limit" type="number" min="1" max="200" value="{{ filters.limit }}">
     </label>
+    <label>底图
+      <select name="basemap">
+        {% for key, label in basemap_options %}
+        <option value="{{ key }}" {% if filters.basemap == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <button type="submit">绘制</button>
   </form>
 </section>
 
 <section class="card map-panel">
   {% if map_data.points %}
-  <svg class="route-map" viewBox="0 0 {{ map_data.width }} {{ map_data.height }}" role="img" aria-label="{{ filters.person or '事件' }}轨迹地图">
-    <path class="route-line" d="{{ map_data.path_d }}"></path>
-    {% for point in map_data.points %}
-    <g>
-      <circle class="route-point" cx="{{ point.x }}" cy="{{ point.y }}" r="13">
-        <title>{{ point.time_display }} {{ point.location_note }}：{{ point.event }}</title>
-      </circle>
-      <text class="route-number" x="{{ point.x }}" y="{{ point.y }}">{{ loop.index }}</text>
-      <text class="route-label" x="{{ point.label_x }}" y="{{ point.label_y }}">{{ point.location_note }}</text>
-    </g>
-    {% endfor %}
-  </svg>
+  {% if map_data.interactive.enabled %}
+  <div id="amap-container" class="interactive-map" aria-label="高德互动地图"></div>
+  {% else %}
+  <div class="map-stack">
+    {% if filters.basemap == 'modern' %}
+    <div class="map-notice">
+      <h3>现代互动底图需要高德 Web JS API 配置</h3>
+      <p class="muted">设置环境变量 `AMAP_JS_API_KEY` 和 `AMAP_SECURITY_JSCODE` 后重启服务，即可在这里显示可缩放、可拖拽的高德底图。</p>
+      <p class="muted">当前继续显示临时矢量参照。</p>
+    </div>
+    {% endif %}
+    <svg class="route-map" viewBox="0 0 {{ map_data.width }} {{ map_data.height }}" role="img" aria-label="{{ filters.person or '事件' }}轨迹地图">
+      <g class="basemap basemap-{{ filters.basemap }}">
+        {% if map_data.basemap.image_url %}
+        <image class="basemap-raster" href="{{ map_data.basemap.image_url }}" x="0" y="0" width="{{ map_data.width }}" height="{{ map_data.height }}" preserveAspectRatio="xMidYMid meet">
+          <title>{{ map_data.basemap.title }}</title>
+        </image>
+        {% endif %}
+        <path class="basemap-land" d="{{ map_data.basemap.land_path_d }}">
+          <title>{{ map_data.basemap.title }}</title>
+        </path>
+        {% for region in map_data.basemap.regions %}
+        <path class="basemap-region" d="{{ region.path_d }}">
+          <title>{{ region.label }}</title>
+        </path>
+        {% endfor %}
+        {% for line in map_data.basemap.lines %}
+        <path class="basemap-line {{ line.kind }}" d="{{ line.path_d }}">
+          <title>{{ line.label }}</title>
+        </path>
+        {% endfor %}
+        {% for label in map_data.basemap.labels %}
+        <text class="basemap-label{% if not label.major %} minor{% endif %}" x="{{ label.x }}" y="{{ label.y }}">{{ label.text }}</text>
+        {% endfor %}
+        <text class="basemap-caption" x="24" y="{{ map_data.height - 24 }}">底图：{{ map_data.basemap.title }}</text>
+      </g>
+      <path class="route-line" d="{{ map_data.path_d }}"></path>
+      {% for point in map_data.points %}
+      <g class="route-marker" data-route-index="{{ loop.index }}" tabindex="0" role="button" aria-label="查看第 {{ loop.index }} 个事件">
+        {% if point.offset %}
+        <line class="route-offset-line" x1="{{ point.base_x }}" y1="{{ point.base_y }}" x2="{{ point.x }}" y2="{{ point.y }}"></line>
+        {% endif %}
+        <circle class="route-point" cx="{{ point.x }}" cy="{{ point.y }}" r="13">
+          <title>{{ point.time_display }} {{ point.location_note }}：{{ point.event }}</title>
+        </circle>
+        <text class="route-number" x="{{ point.x }}" y="{{ point.y }}">{{ loop.index }}</text>
+      </g>
+      {% endfor %}
+    </svg>
+  </div>
+  {% endif %}
   <aside class="route-list">
     {% for point in map_data.points %}
-    <article class="route-item">
+    <article class="route-item" id="route-item-{{ loop.index }}" data-route-index="{{ loop.index }}" tabindex="0" role="button" aria-label="定位第 {{ loop.index }} 个地图点">
       <header>
         <span class="route-index">{{ loop.index }}</span>
         <strong>{{ point.time_display or '未填写时间' }}</strong>
@@ -528,6 +803,145 @@ MAP_TEMPLATE = """
   </div>
   {% endif %}
 </section>
+{% if map_data.points %}
+<script>
+  function setActiveRoute(index, options = {}) {
+    document.querySelectorAll(".route-item.active").forEach((item) => item.classList.remove("active"));
+    document.querySelectorAll(".route-marker.active").forEach((marker) => marker.classList.remove("active"));
+    const item = document.getElementById(`route-item-${index}`);
+    const marker = document.querySelector(`.route-marker[data-route-index="${index}"]`);
+    if (item) {
+      item.classList.add("active");
+      if (options.scrollList !== false) {
+        item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+    if (marker) {
+      marker.classList.add("active");
+      if (options.focusMarker) {
+        marker.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  function focusRouteItem(index) {
+    setActiveRoute(index, { scrollList: true });
+  }
+
+  document.querySelectorAll(".route-marker").forEach((marker) => {
+    const index = marker.dataset.routeIndex;
+    marker.addEventListener("click", () => setActiveRoute(index, { scrollList: true }));
+    marker.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setActiveRoute(index, { scrollList: true });
+      }
+    });
+  });
+
+  document.querySelectorAll(".route-item").forEach((item) => {
+    const index = item.dataset.routeIndex;
+    item.addEventListener("click", () => setActiveRoute(index, { scrollList: false, focusMarker: true }));
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setActiveRoute(index, { scrollList: false, focusMarker: true });
+      }
+    });
+  });
+</script>
+{% endif %}
+{% if map_data.interactive.enabled %}
+<script>
+  window._AMapSecurityConfig = { securityJsCode: "{{ map_data.interactive.security_jscode }}" };
+</script>
+<script src="https://webapi.amap.com/loader.js"></script>
+<script>
+  const mapStoryPoints = {{ map_data.points|tojson }};
+  const mapStoryKey = "{{ map_data.interactive.key }}";
+
+  function transformLat(x, y) {
+    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+    return ret;
+  }
+
+  function transformLon(x, y) {
+    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+    return ret;
+  }
+
+  function wgs84ToGcj02(lon, lat) {
+    const a = 6378245.0;
+    const ee = 0.00669342162296594323;
+    let dLat = transformLat(lon - 105.0, lat - 35.0);
+    let dLon = transformLon(lon - 105.0, lat - 35.0);
+    const radLat = lat / 180.0 * Math.PI;
+    let magic = Math.sin(radLat);
+    magic = 1 - ee * magic * magic;
+    const sqrtMagic = Math.sqrt(magic);
+    dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
+    dLon = (dLon * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
+    return [lon + dLon, lat + dLat];
+  }
+
+  AMapLoader.load({
+    key: mapStoryKey,
+    version: "2.0",
+    plugins: ["AMap.Scale", "AMap.ToolBar"],
+  }).then((AMap) => {
+    const path = mapStoryPoints.map((point) => wgs84ToGcj02(point.lon, point.lat));
+    const map = new AMap.Map("amap-container", {
+      viewMode: "2D",
+      zoom: 6,
+      center: path[Math.floor(path.length / 2)],
+      mapStyle: "amap://styles/normal",
+    });
+    map.addControl(new AMap.Scale());
+    map.addControl(new AMap.ToolBar());
+
+    const polyline = new AMap.Polyline({
+      path,
+      strokeColor: "#1f5f4a",
+      strokeOpacity: 0.92,
+      strokeWeight: 5,
+      lineJoin: "round",
+    });
+    map.add(polyline);
+
+    mapStoryPoints.forEach((point, index) => {
+      const marker = new AMap.Marker({
+        position: path[index],
+        title: `${index + 1}. ${point.event}`,
+        label: {
+          content: String(index + 1),
+          direction: "center",
+        },
+      });
+      marker.on("click", () => {
+        focusRouteItem(index + 1);
+        const info = new AMap.InfoWindow({
+          content: `<strong>${index + 1}. ${point.time_display || ""}</strong><br>${point.event}<br>${point.location_display || ""}`,
+          offset: new AMap.Pixel(0, -30),
+        });
+        info.open(map, marker.getPosition());
+      });
+      map.add(marker);
+    });
+    map.setFitView([polyline], false, [50, 50, 50, 50]);
+  }).catch(() => {
+    const container = document.getElementById("amap-container");
+    if (container) {
+      container.innerHTML = "<div class='map-notice'><h3>高德地图加载失败</h3><p class='muted'>请检查网络、AMAP_JS_API_KEY 和 AMAP_SECURITY_JSCODE 配置。</p></div>";
+    }
+  });
+</script>
+{% endif %}
 {% endblock %}
 """
 
@@ -645,6 +1059,9 @@ def create_app(db_path: Optional[str | Path] = None, *, test_config: Optional[di
     app.config.from_mapping(
         SECRET_KEY="mapstory-web",
         DB_PATH=str(db_path or DEFAULT_DB_PATH),
+        BASEMAP_DIR="data/basemaps",
+        AMAP_JS_API_KEY=os.environ.get("AMAP_JS_API_KEY"),
+        AMAP_SECURITY_JSCODE=os.environ.get("AMAP_SECURITY_JSCODE"),
         TIMEZONE=DEFAULT_TIMEZONE,
     )
     if test_config:
@@ -748,8 +1165,24 @@ def create_app(db_path: Optional[str | Path] = None, *, test_config: Optional[di
             "events/map.html",
             title="MapStory 轨迹地图",
             filters=filters,
-            map_data=_build_map_data(events),
+            map_data=_build_map_data(
+                events,
+                filters["basemap"],
+                image_url=url_for("web.basemap_image", key=filters["basemap"])
+                if _find_basemap_image(app, filters["basemap"])
+                else None,
+                interactive=_interactive_map_config(app, filters["basemap"]),
+            ),
+            basemap_options=BASEMAP_OPTIONS,
         )
+
+    @web.route("/basemaps/<key>")
+    def basemap_image(key: str):
+        """提供本地权威底图图片。"""
+        path = _find_basemap_image(app, key)
+        if path is None:
+            abort(404)
+        return send_file(path)
 
     @web.route("/events/new", methods=["GET", "POST"])
     def new_event():
@@ -866,6 +1299,34 @@ def _get_store(app: Flask) -> EventStore:
     return store
 
 
+def _find_basemap_image(app: Flask, key: str) -> Optional[Path]:
+    """查找本地权威底图图片。"""
+    if key not in BASEMAP_LAYERS:
+        return None
+    basemap_dir = Path(app.config["BASEMAP_DIR"])
+    if not basemap_dir.is_absolute():
+        basemap_dir = basemap_dir.resolve()
+    asset_key = BASEMAP_LAYERS[key].get("asset_key", key)
+    for suffix in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+        candidate = basemap_dir / f"{asset_key}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _interactive_map_config(app: Flask, basemap: str) -> dict[str, Any]:
+    """返回现代互动地图配置。"""
+    key = app.config.get("AMAP_JS_API_KEY")
+    security_jscode = app.config.get("AMAP_SECURITY_JSCODE")
+    enabled = basemap == "modern" and bool(key) and bool(security_jscode)
+    return {
+        "enabled": enabled,
+        "provider": "amap" if basemap == "modern" else None,
+        "key": key if enabled else "",
+        "security_jscode": security_jscode if enabled else "",
+    }
+
+
 def _api_success(data: Any, status_code: int = 200):
     """构造 JSON 成功响应。"""
     return jsonify({"ok": True, "data": data}), status_code
@@ -887,11 +1348,15 @@ def _parse_filters(args):
     priority = normalize_optional_text(args.get("priority"))
     if priority:
         priority = validate_priority(priority)
+    basemap = args.get("basemap") or "modern"
+    if basemap not in BASEMAP_LAYERS:
+        basemap = "modern"
     return {
         "q": normalize_optional_text(args.get("q")),
         "person": normalize_optional_text(args.get("person")),
         "location": normalize_optional_text(args.get("location")),
         "priority": priority,
+        "basemap": basemap,
         "order": args.get("order", "time") if args.get("order", "time") in {"time", "created"} else "time",
         "limit": limit,
         "offset": offset,
@@ -1037,8 +1502,15 @@ def _row_time_text(row) -> str:
     return format_structured_time(value)
 
 
-def _build_map_data(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_map_data(
+    events: list[dict[str, Any]],
+    basemap: str = "modern",
+    *,
+    image_url: Optional[str] = None,
+    interactive: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """将事件坐标投影到内联 SVG 轨迹图。"""
+    basemap_layer = BASEMAP_LAYERS.get(basemap, BASEMAP_LAYERS["modern"])
     points = sorted(
         [event for event in events if event.get("lat") is not None and event.get("lon") is not None],
         key=_map_event_sort_key,
@@ -1053,10 +1525,13 @@ def _build_map_data(events: list[dict[str, Any]]) -> dict[str, Any]:
             "points": [],
             "path_d": "",
             "bounds_label": "暂无坐标范围",
+            "basemap": _project_basemap_layer(basemap_layer, lambda _lat, _lon: (0.0, 0.0), image_url=image_url),
+            "interactive": interactive or {"enabled": False},
         }
 
-    lats = [float(point["lat"]) for point in points]
-    lons = [float(point["lon"]) for point in points]
+    basemap_coords = _basemap_coordinate_pairs(basemap_layer)
+    lats = [float(point["lat"]) for point in points] + [lat for lat, _lon in basemap_coords]
+    lons = [float(point["lon"]) for point in points] + [lon for _lat, lon in basemap_coords]
     min_lat, max_lat = min(lats), max(lats)
     min_lon, max_lon = min(lons), max(lons)
     if min_lat == max_lat:
@@ -1070,15 +1545,34 @@ def _build_map_data(events: list[dict[str, Any]]) -> dict[str, Any]:
     lon_span = max_lon - min_lon
     drawable_width = width - padding * 2
     drawable_height = height - padding * 2
+
+    def project(lat: float, lon: float) -> tuple[float, float]:
+        x = padding + (lon - min_lon) / lon_span * drawable_width
+        y = padding + (max_lat - lat) / lat_span * drawable_height
+        return round(x, 2), round(y, 2)
+
     projected = []
-    for point in points:
-        x = padding + (float(point["lon"]) - min_lon) / lon_span * drawable_width
-        y = padding + (max_lat - float(point["lat"])) / lat_span * drawable_height
+    cluster_counts: dict[tuple[int, int], int] = {}
+    for index, point in enumerate(points):
+        base_x, base_y = project(float(point["lat"]), float(point["lon"]))
+        cluster_key = (round(float(point["lat"]), 2), round(float(point["lon"]), 2))
+        cluster_index = cluster_counts.get(cluster_key, 0)
+        cluster_counts[cluster_key] = cluster_index + 1
+        if cluster_index:
+            angle = (cluster_index - 1) * 1.9
+            radius = 24 + min(cluster_index, 3) * 5
+            x = round(base_x + radius * math.cos(angle), 2)
+            y = round(base_y + radius * math.sin(angle), 2)
+        else:
+            x, y = base_x, base_y
         projected.append(
             {
                 **point,
-                "x": round(x, 2),
-                "y": round(y, 2),
+                "base_x": base_x,
+                "base_y": base_y,
+                "x": x,
+                "y": y,
+                "offset": cluster_index > 0,
                 "label_x": round(min(x + 18, width - padding), 2),
                 "label_y": round(max(y - 16, padding / 2), 2),
             }
@@ -1095,6 +1589,65 @@ def _build_map_data(events: list[dict[str, Any]]) -> dict[str, Any]:
         "points": projected,
         "path_d": path_d,
         "bounds_label": bounds_label,
+        "basemap": _project_basemap_layer(basemap_layer, project, image_url=image_url),
+        "interactive": interactive or {"enabled": False},
+    }
+
+
+def _basemap_coordinate_pairs(layer: dict[str, Any]) -> list[tuple[float, float]]:
+    """取出底图层所有经纬度坐标，用于计算投影范围。"""
+    coords: list[tuple[float, float]] = [(float(lat), float(lon)) for lat, lon in layer.get("land", [])]
+    for region in layer["regions"]:
+        coords.extend((float(lat), float(lon)) for lat, lon in region["points"])
+    for line in layer["lines"]:
+        coords.extend((float(lat), float(lon)) for lat, lon in line["points"])
+    for label in layer["labels"]:
+        coords.append((float(label["lat"]), float(label["lon"])))
+    return coords
+
+
+def _project_basemap_layer(layer: dict[str, Any], project, *, image_url: Optional[str] = None) -> dict[str, Any]:
+    """把底图图层投影到 SVG 坐标。"""
+    land_points = [project(float(lat), float(lon)) for lat, lon in layer.get("land", [])]
+    land_path_d = " ".join(
+        f"{'M' if index == 0 else 'L'} {x} {y}"
+        for index, (x, y) in enumerate(land_points)
+    )
+
+    regions = []
+    for region in layer["regions"]:
+        projected_points = [project(float(lat), float(lon)) for lat, lon in region["points"]]
+        path_d = " ".join(
+            f"{'M' if index == 0 else 'L'} {x} {y}"
+            for index, (x, y) in enumerate(projected_points)
+        )
+        regions.append({"label": region["label"], "path_d": f"{path_d} Z"})
+
+    lines = []
+    for line in layer["lines"]:
+        projected_points = [project(float(lat), float(lon)) for lat, lon in line["points"]]
+        path_d = " ".join(
+            f"{'M' if index == 0 else 'L'} {x} {y}"
+            for index, (x, y) in enumerate(projected_points)
+        )
+        lines.append({"label": line["label"], "kind": line["kind"], "path_d": path_d})
+
+    labels = []
+    for label in layer["labels"]:
+        x, y = project(float(label["lat"]), float(label["lon"]))
+        labels.append({"text": label["text"], "major": label["major"], "x": x, "y": y})
+
+    return {
+        "title": layer["title"],
+        "description": layer["description"],
+        "source": layer["source"],
+        "source_url": layer["source_url"],
+        "asset_hint": layer["asset_hint"],
+        "image_url": image_url,
+        "land_path_d": f"{land_path_d} Z" if land_path_d else "",
+        "regions": regions,
+        "lines": lines,
+        "labels": labels,
     }
 
 

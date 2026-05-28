@@ -207,10 +207,87 @@ class WebUITests(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertIn("张良的地理轨迹", body)
         self.assertIn("route-line", body)
+        self.assertIn("现代行政规划图", body)
+        self.assertIn("自然资源部/天地图标准地图服务系统", body)
+        self.assertIn("现代互动底图需要高德 Web JS API 配置", body)
+        self.assertIn("basemap-modern", body)
+        self.assertIn("basemap-land", body)
+        self.assertIn("route-marker", body)
+        self.assertIn("focusRouteItem", body)
+        self.assertIn("setActiveRoute", body)
+        self.assertIn("route-offset-line", body)
+        self.assertIn('id="route-item-1"', body)
+        self.assertIn('aria-label="定位第 1 个地图点"', body)
+        self.assertNotIn("route-label", body)
         self.assertIn("下邳", body)
         self.assertLess(body.index("张良匿居下邳"), body.index("张良博浪沙击秦"))
         self.assertIn("霸上", body)
         self.assertNotIn("无关事件", body)
+
+        historical_response = self.client.get("/events/map?person=张良&basemap=historical")
+        self.assertEqual(historical_response.status_code, 200)
+        historical_body = historical_response.get_data(as_text=True)
+        self.assertIn("当时地理图", historical_body)
+        self.assertIn("中国历史地图集", historical_body)
+        self.assertIn("basemap-historical", historical_body)
+        self.assertIn("basemap-land", historical_body)
+        self.assertIn("韩故地", historical_body)
+
+    def test_map_page_can_use_local_authoritative_basemap_image(self) -> None:
+        """验证本地权威图片底图存在时会优先叠加图片。"""
+        basemap_dir = Path(self._tmp.name) / "basemaps"
+        basemap_dir.mkdir()
+        (basemap_dir / "qin-han-liuhou.svg").write_text(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'></svg>",
+            encoding="utf-8",
+        )
+        self.app.config["BASEMAP_DIR"] = str(basemap_dir)
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "张良匿居下邳",
+                "time": "-218",
+                "lat": 34.31,
+                "lon": 117.95,
+                "location_note": "下邳",
+                "persons": "张良",
+                "priority": "fact",
+            },
+        )
+
+        response = self.client.get("/events/map?person=张良&basemap=historical")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('class="basemap-raster"', body)
+        self.assertIn("/basemaps/historical", body)
+
+        image_response = self.client.get("/basemaps/historical")
+        self.assertEqual(image_response.status_code, 200)
+
+    def test_modern_map_can_render_amap_container_when_configured(self) -> None:
+        """验证现代底图配置高德 key 后渲染互动地图容器。"""
+        self.app.config["AMAP_JS_API_KEY"] = "test-key"
+        self.app.config["AMAP_SECURITY_JSCODE"] = "test-security"
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "张良献策霸上",
+                "time": "-207",
+                "lat": 34.35,
+                "lon": 109.10,
+                "location_note": "霸上",
+                "persons": "张良",
+                "priority": "fact",
+            },
+        )
+
+        response = self.client.get("/events/map?person=张良&basemap=modern")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("amap-container", body)
+        self.assertIn("https://webapi.amap.com/loader.js", body)
+        self.assertIn("test-key", body)
+        self.assertNotIn("现代互动底图需要高德 Web JS API 配置", body)
 
     def test_detail_page_uses_remark_source_section(self) -> None:
         """验证详情页下方展示“备注 / 来源”而非“事件内容”。"""
