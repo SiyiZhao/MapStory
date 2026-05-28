@@ -151,6 +151,67 @@ class WebUITests(unittest.TestCase):
         self.assertIn("武昌起义", body)
         self.assertNotIn("上海开埠", body)
 
+    def test_map_page_draws_person_trajectory(self) -> None:
+        """验证地图页按人物筛选并绘制带坐标的事件轨迹。"""
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "张良匿居下邳",
+                "time": "-218",
+                "lat": 34.31,
+                "lon": 117.95,
+                "location_note": "下邳",
+                "persons": "张良",
+                "priority": "fact",
+            },
+        )
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "张良博浪沙击秦",
+                "time": "-218",
+                "lat": 35.06,
+                "lon": 113.94,
+                "location_note": "博浪沙",
+                "persons": "张良",
+                "priority": "fact",
+            },
+        )
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "张良献策霸上",
+                "time": "-207",
+                "lat": 34.35,
+                "lon": 109.10,
+                "location_note": "霸上",
+                "persons": "张良, 刘邦",
+                "priority": "fact",
+            },
+        )
+        self.client.post(
+            "/api/events",
+            json={
+                "event": "无关事件",
+                "time": "-207",
+                "lat": 30.60,
+                "lon": 114.30,
+                "location_note": "武昌",
+                "persons": "其他人",
+                "priority": "fact",
+            },
+        )
+
+        response = self.client.get("/events/map?person=张良")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("张良的地理轨迹", body)
+        self.assertIn("route-line", body)
+        self.assertIn("下邳", body)
+        self.assertLess(body.index("张良匿居下邳"), body.index("张良博浪沙击秦"))
+        self.assertIn("霸上", body)
+        self.assertNotIn("无关事件", body)
+
     def test_detail_page_uses_remark_source_section(self) -> None:
         """验证详情页下方展示“备注 / 来源”而非“事件内容”。"""
         create_response = self.client.post(

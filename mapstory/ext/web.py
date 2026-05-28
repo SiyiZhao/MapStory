@@ -11,7 +11,7 @@ from jinja2 import DictLoader
 from ..constants import DEFAULT_DB_PATH, DEFAULT_TIMEZONE, PRIORITY_CHOICES, PRIORITY_LABELS
 from ..errors import InputValidationError, NotFoundError
 from ..store import EventStore
-from ..time import format_structured_time, structured_time_from_parts
+from ..time import build_sort_key, format_structured_time, structured_time_from_parts
 from ..validators import normalize_optional_text, normalize_persons, validate_priority
 
 BASE_TEMPLATE = """
@@ -257,11 +257,99 @@ BASE_TEMPLATE = """
       background: rgba(255, 255, 255, 0.55);
     }
 
+    .map-panel {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+      align-items: start;
+    }
+
+    .route-map {
+      width: 100%;
+      min-height: 520px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background:
+        linear-gradient(rgba(31, 95, 74, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(31, 95, 74, 0.08) 1px, transparent 1px),
+        #fdf8ef;
+      background-size: 48px 48px;
+    }
+
+    .route-line {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 3.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .route-point {
+      fill: #fffaf2;
+      stroke: var(--danger);
+      stroke-width: 2.5;
+    }
+
+    .route-number {
+      fill: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+
+    .route-label {
+      fill: var(--text);
+      font-size: 13px;
+      paint-order: stroke;
+      stroke: rgba(255, 250, 242, 0.9);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+
+    .route-list {
+      display: grid;
+      gap: 10px;
+      max-height: 560px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .route-item {
+      display: grid;
+      gap: 6px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.78);
+    }
+
+    .route-item header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .route-index {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+
     @media (max-width: 860px) {
       .hero { grid-template-columns: 1fr; }
       .shell { width: min(100vw - 20px, 1180px); padding-top: 16px; }
       .hero-card, .sidebar, .card, .toolbar { padding: 16px; }
       .detail-grid.five-col { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+      .map-panel { grid-template-columns: 1fr; }
+      .route-map { min-height: 380px; }
     }
   </style>
 </head>
@@ -284,6 +372,7 @@ LIST_TEMPLATE = """
     <div class="actions">
       <a class="button" href="{{ url_for('web.new_event') }}">新增事件</a>
       <a class="button secondary" href="{{ url_for('web.list_events') }}">刷新列表</a>
+      <a class="button secondary" href="{{ url_for('web.event_map', person='张良') }}">张良轨迹</a>
       <a class="button secondary" href="{{ url_for('web.api_events') }}">查看 API</a>
     </div>
     <div class="summary-grid">
@@ -354,6 +443,89 @@ LIST_TEMPLATE = """
       <h3>当前没有匹配的事件</h3>
       <p class="muted">可以先新增一条事件，或者放宽筛选条件。</p>
     </div>
+  {% endif %}
+</section>
+{% endblock %}
+"""
+
+MAP_TEMPLATE = """
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero">
+  <article class="hero-card">
+    <p class="eyebrow">MapStory Map</p>
+    <h1>{{ filters.person or '全部人物' }}的地理轨迹</h1>
+    <p class="muted">按结构化时间排序，连接所有带经纬度的事件地点；可用筛选项切换人物、地点或年份范围。</p>
+    <div class="actions">
+      <a class="button secondary" href="{{ url_for('web.list_events') }}">返回列表</a>
+      <a class="button secondary" href="{{ url_for('web.api_events', person=filters.person, order='time', limit=filters.limit) }}">查看 API</a>
+    </div>
+  </article>
+  <aside class="hero-card sidebar">
+    <div class="pill">轨迹点 {{ map_data.points|length }}</div>
+    <p><strong>{{ map_data.bounds_label }}</strong></p>
+    <p class="muted">同一地点的重复事件会按时间保留，方便观察停留与回返。</p>
+  </aside>
+</section>
+
+<section class="card toolbar">
+  <form method="get">
+    <label>人物
+      <input name="person" value="{{ filters.person or '' }}" placeholder="张良">
+    </label>
+    <label>关键词
+      <input name="q" value="{{ filters.q or '' }}" placeholder="事件">
+    </label>
+    <label>地点
+      <input name="location" value="{{ filters.location or '' }}" placeholder="下邳、咸阳、留">
+    </label>
+    <label>起始年
+      <input name="start_year" type="number" value="{{ filters.start_year if filters.start_year is not none else '' }}">
+    </label>
+    <label>结束年
+      <input name="end_year" type="number" value="{{ filters.end_year if filters.end_year is not none else '' }}">
+    </label>
+    <label>结果数
+      <input name="limit" type="number" min="1" max="200" value="{{ filters.limit }}">
+    </label>
+    <button type="submit">绘制</button>
+  </form>
+</section>
+
+<section class="card map-panel">
+  {% if map_data.points %}
+  <svg class="route-map" viewBox="0 0 {{ map_data.width }} {{ map_data.height }}" role="img" aria-label="{{ filters.person or '事件' }}轨迹地图">
+    <path class="route-line" d="{{ map_data.path_d }}"></path>
+    {% for point in map_data.points %}
+    <g>
+      <circle class="route-point" cx="{{ point.x }}" cy="{{ point.y }}" r="13">
+        <title>{{ point.time_display }} {{ point.location_note }}：{{ point.event }}</title>
+      </circle>
+      <text class="route-number" x="{{ point.x }}" y="{{ point.y }}">{{ loop.index }}</text>
+      <text class="route-label" x="{{ point.label_x }}" y="{{ point.label_y }}">{{ point.location_note }}</text>
+    </g>
+    {% endfor %}
+  </svg>
+  <aside class="route-list">
+    {% for point in map_data.points %}
+    <article class="route-item">
+      <header>
+        <span class="route-index">{{ loop.index }}</span>
+        <strong>{{ point.time_display or '未填写时间' }}</strong>
+      </header>
+      <div>{{ point.event }}</div>
+      <div class="muted">{{ point.location_display }}</div>
+      {% if point.time_note %}
+      <div class="muted">{{ point.time_note }}</div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </aside>
+  {% else %}
+  <div class="empty-state">
+    <h3>没有可绘制的坐标事件</h3>
+    <p class="muted">请确认事件包含经纬度，或放宽人物、地点和年份筛选。</p>
+  </div>
   {% endif %}
 </section>
 {% endblock %}
@@ -482,6 +654,7 @@ def create_app(db_path: Optional[str | Path] = None, *, test_config: Optional[di
         {
             "base.html": BASE_TEMPLATE,
             "events/list.html": LIST_TEMPLATE,
+            "events/map.html": MAP_TEMPLATE,
             "events/form.html": FORM_TEMPLATE,
             "events/detail.html": DETAIL_TEMPLATE,
         }
@@ -548,6 +721,34 @@ def create_app(db_path: Optional[str | Path] = None, *, test_config: Optional[di
             filters=filters,
             events=events,
             priority_labels=sorted(PRIORITY_LABELS),
+        )
+
+    @web.route("/events/map")
+    def event_map():
+        """渲染按时间连接的事件地理轨迹。"""
+        store = _get_store(app)
+        filters = _parse_filters(request.args)
+        if not filters["person"] and not request.args:
+            filters["person"] = "张良"
+        rows = store.search_events(
+            start_year=filters["start_year"],
+            end_year=filters["end_year"],
+            lat_range=filters["lat_range"],
+            lon_range=filters["lon_range"],
+            person_contains=filters["person"],
+            event_contains=filters["q"],
+            location_contains=filters["location"],
+            priority=filters["priority"],
+            limit=filters["limit"],
+            offset=filters["offset"],
+            order="time",
+        )
+        events = [_decorate_row(row, app.config["TIMEZONE"]) for row in rows]
+        return render_template(
+            "events/map.html",
+            title="MapStory 轨迹地图",
+            filters=filters,
+            map_data=_build_map_data(events),
         )
 
     @web.route("/events/new", methods=["GET", "POST"])
@@ -834,3 +1035,77 @@ def _row_time_text(row) -> str:
         minute=row.get("time_minute") if hasattr(row, "get") else row["time_minute"],
     )
     return format_structured_time(value)
+
+
+def _build_map_data(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """将事件坐标投影到内联 SVG 轨迹图。"""
+    points = sorted(
+        [event for event in events if event.get("lat") is not None and event.get("lon") is not None],
+        key=_map_event_sort_key,
+    )
+    width = 860
+    height = 560
+    padding = 54
+    if not points:
+        return {
+            "width": width,
+            "height": height,
+            "points": [],
+            "path_d": "",
+            "bounds_label": "暂无坐标范围",
+        }
+
+    lats = [float(point["lat"]) for point in points]
+    lons = [float(point["lon"]) for point in points]
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    if min_lat == max_lat:
+        min_lat -= 0.5
+        max_lat += 0.5
+    if min_lon == max_lon:
+        min_lon -= 0.5
+        max_lon += 0.5
+
+    lat_span = max_lat - min_lat
+    lon_span = max_lon - min_lon
+    drawable_width = width - padding * 2
+    drawable_height = height - padding * 2
+    projected = []
+    for point in points:
+        x = padding + (float(point["lon"]) - min_lon) / lon_span * drawable_width
+        y = padding + (max_lat - float(point["lat"])) / lat_span * drawable_height
+        projected.append(
+            {
+                **point,
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "label_x": round(min(x + 18, width - padding), 2),
+                "label_y": round(max(y - 16, padding / 2), 2),
+            }
+        )
+
+    path_d = " ".join(
+        f"{'M' if index == 0 else 'L'} {point['x']} {point['y']}"
+        for index, point in enumerate(projected)
+    )
+    bounds_label = f"{min_lat:.2f}°N-{max_lat:.2f}°N，{min_lon:.2f}°E-{max_lon:.2f}°E"
+    return {
+        "width": width,
+        "height": height,
+        "points": projected,
+        "path_d": path_d,
+        "bounds_label": bounds_label,
+    }
+
+
+def _map_event_sort_key(event: dict[str, Any]) -> tuple[tuple[int, int, int, int, int, int, int], int]:
+    """地图同时间事件按创建顺序连接，保留导入时的叙事顺序。"""
+    structured = structured_time_from_parts(
+        year=event.get("time_year"),
+        month=event.get("time_month"),
+        day=event.get("time_day"),
+        hour=event.get("time_hour"),
+        minute=event.get("time_minute"),
+        time_note=event.get("time_note"),
+    )
+    return build_sort_key(structured), int(event.get("id") or 0)
